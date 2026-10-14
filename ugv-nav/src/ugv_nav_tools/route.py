@@ -10,8 +10,9 @@ from typing import Any
 
 MAX_WAYPOINTS = 20
 MAX_LOOPS = 10
-# Accepted on the car 2026-10-13: Nav2 result 4 within 7.5 cm and 0.18 rad.
-GOAL_TOLERANCE_M = 0.075
+# Nav2 result 4 plus this final check. 0.10 m (was 0.075) because the six-wheel skid
+# chassis slides a few cm while turning in place (measured 2026-10-14).
+GOAL_TOLERANCE_M = 0.10
 GOAL_TOLERANCE_RAD = 0.18
 
 

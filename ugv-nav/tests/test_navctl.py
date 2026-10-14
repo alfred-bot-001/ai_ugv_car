@@ -31,7 +31,8 @@ def test_pose_math_and_tolerance() -> None:
         pytest.approx(0.1),
     )
     assert within_tolerance(Pose(0.05, 0, 0.1), Pose(0, 0, 0))
-    assert not within_tolerance(Pose(0.08, 0, 0), Pose(0, 0, 0))
+    assert within_tolerance(Pose(0.08, 0, 0), Pose(0, 0, 0))
+    assert not within_tolerance(Pose(0.11, 0, 0), Pose(0, 0, 0))
     with pytest.raises(ValueError):
         Pose(math.nan, 0, 0)
 
@@ -137,6 +138,21 @@ def test_patrol_stops_at_first_failed_leg_and_writes_report(tmp_path: Path) -> N
     assert [leg["index"] for leg in summary["legs"]] == [1, 2]
     reports = list(ctl.settings.reports.glob("patrol-*.json"))
     assert len(reports) == 1 and json.loads(reports[0].read_text())["completed_legs"] == 1
+
+
+def test_patrol_records_a_crashing_leg_and_stays_disarmed(tmp_path: Path) -> None:
+    ctl, fake, _ = make_ctl(tmp_path, [{"ok": True}])
+
+    def flaky(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if "navigate" in command and not fake.navigate:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="TimeoutError")
+        return fake(command, **kwargs)
+
+    ctl.run = flaky
+    route = parse_route({"waypoints": [{"x": 1, "y": 0}, {"x": 0, "y": 0}]})
+    summary = ctl.patrol(route)
+    assert summary["completed_legs"] == 1 and "TimeoutError" in summary["legs"][1]["error"]
+    assert json.loads((ctl.settings.board / "arm.json").read_text()) == {"enabled": False}
 
 
 def test_modes_save_and_cli(tmp_path: Path) -> None:

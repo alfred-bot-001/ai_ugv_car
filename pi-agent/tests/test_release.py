@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from tvpet_pi.hardware import Board
+from tvpet_pi.hardware import RUNAWAY_SPEED, Board
 from tvpet_pi.protocol import Stick
 from tvpet_pi.safety import Guard
 
@@ -120,7 +120,13 @@ def test_persistent_qualification_checks_current_health_and_recovers(tmp_path: P
     assert not board.status()["wheels_ready"]
     assert board.status()["control_qualified"]
     board.received_at = time.monotonic()
-    for changes in ({"v": 0}, {"L": 0.3}, {"pan": 90}, {"tilt": float("nan")}, {"pan": None}):
+    for changes in (
+        {"v": 0},
+        {"L": RUNAWAY_SPEED + 0.01},
+        {"pan": 90},
+        {"tilt": float("nan")},
+        {"pan": None},
+    ):
         board.telemetry = {**good, **changes}
         assert not board.status()["wheels_ready"] and not board.status()["gimbal_ready"]
         with pytest.raises(ValueError):

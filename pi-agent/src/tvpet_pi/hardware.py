@@ -15,6 +15,10 @@ import serial
 from .protocol import Stick
 from .safety import Guard, differential
 
+# Measured wheel speed (m/s) above this is a runaway: emergency stop under a lease.
+# Raised from 0.2 on 2026-10-14 for 0.10 m/s navigation with closed-loop overshoot.
+RUNAWAY_SPEED = 0.3
+
 
 def parse_telemetry(line: bytes) -> dict[str, Any] | None:
     """Resynchronize after boot noise, reject malformed/nonfinite telemetry."""
@@ -144,7 +148,8 @@ class Board:
             if self.guard.gimbal_verified:
                 self.write({"T": 135})
 
-    def move(self, stick: Stick) -> None:
+    def move(self, stick: Stick, maximum: float = 0.10) -> None:
+        """maximum is the T1 ceiling: 0.10 for the web joystick, higher only for nav.py."""
         with self.lock:
             self.load_evidence()
             health_error = self.health_error()
@@ -153,7 +158,7 @@ class Board:
                 raise ValueError(health_error)
             x, y = self.guard.accept(stick)
             if stick.target == "wheels":
-                left, right = differential(x, y)
+                left, right = differential(x, y, min(maximum, RUNAWAY_SPEED))
                 self.write({"T": 1, "L": left, "R": right})
             else:
                 # Relative direction, capped to 2 deg per 100ms tick. No input angles.
@@ -197,7 +202,9 @@ class Board:
                     if self.guard.expired():
                         self.stop()
                     if self.guard.lease:
-                        if any(abs(float(self.telemetry.get(k, 0))) > 0.2 for k in ("L", "R")):
+                        if any(
+                            abs(float(self.telemetry.get(k, 0))) > RUNAWAY_SPEED for k in ("L", "R")
+                        ):
                             self.stop(emergency=True)
                         elif self.health_error() or time.monotonic() - self.received_at > 0.6:
                             self.stop()
@@ -236,7 +243,9 @@ class Board:
             for key in ("L", "R", "v", "pan", "tilt")
         ):
             return "硬件反馈不完整或无效"
-        if self.telemetry["v"] <= 0 or any(abs(self.telemetry[key]) > 0.2 for key in ("L", "R")):
+        if self.telemetry["v"] <= 0 or any(
+            abs(self.telemetry[key]) > RUNAWAY_SPEED for key in ("L", "R")
+        ):
             return "底盘速度或电压反馈异常"
         # Allow 0.5 deg of measured servo settling; command limits stay at +-45 / -15..45.
         pan, tilt = self.telemetry["pan"], self.telemetry["tilt"]

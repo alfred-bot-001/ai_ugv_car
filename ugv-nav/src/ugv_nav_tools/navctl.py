@@ -179,7 +179,11 @@ class NavCtl:
         legs = []
         for loop, index, pose in route.legs():
             self.echo(f"巡航 第 {loop} 圈 第 {index} 点 → ({pose.x:.2f}, {pose.y:.2f})")
-            result = self.goal(pose) | {"loop": loop, "index": index}
+            try:
+                result = self.goal(pose)
+            except (RuntimeError, BoardError, ValueError) as error:
+                result = {"ok": False, "error": str(error)}  # goal() already disarmed
+            result |= {"loop": loop, "index": index}
             legs.append(result)
             if not result.get("ok"):
                 break

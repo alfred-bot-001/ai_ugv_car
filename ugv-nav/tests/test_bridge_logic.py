@@ -63,6 +63,7 @@ def test_front_ranges_use_the_mount_yaw() -> None:
 def test_rotation_space_requires_known_free_cells() -> None:
     free = [0] * 100
     assert rotation_space_clear(free, 10, 10, 0.1, 0, 0, 0.5, 0.5, radius=0.3)
+    assert rotation_space_clear(free, 10, 10, 0.1, 0, 0, 0.5, 0.5)  # default turn radius
     occupied = free.copy()
     occupied[5 * 10 + 6] = 100
     assert not rotation_space_clear(occupied, 10, 10, 0.1, 0, 0, 0.5, 0.5, radius=0.3)

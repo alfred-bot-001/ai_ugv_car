@@ -23,8 +23,9 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from .hardware import Board
 from .protocol import Stick
 
-MAX_LINEAR = 0.08  # m/s, forward only
-MAX_ANGULAR = 0.3  # rad/s
+# 2026-10-14, user-approved: Nav2 now runs at 0.10 m/s and 0.5 rad/s (was 0.06 / 0.25).
+MAX_LINEAR = 0.12  # m/s, forward only
+MAX_ANGULAR = 0.6  # rad/s
 CALIBRATION_MAX_LINEAR = 0.06
 ARM_MAX_SECONDS = 120.0
 CALIBRATION_ARM_MAX_SECONDS = 5.0
@@ -34,7 +35,8 @@ OBSERVE_SECONDS = 2.0
 TRACK_WIDTH_M = 0.17452
 # Low-speed skid-steer compensation for static friction; PWM limits stay unchanged.
 TURN_GAIN = 2.0
-PWM_LIMIT = 0.08
+# T1 wheel-speed ceiling for navigation; stays below the Board runaway threshold.
+PWM_LIMIT = 0.18
 MAX_REQUEST = 4096
 
 
@@ -131,9 +133,9 @@ class WheelPI:
         return output[0], output[1]
 
 
-def stick_from_wheels(left: float, right: float) -> tuple[float, float]:
-    """Inverse of safety.differential at maximum 0.1, so Board.move reproduces left/right."""
-    return (left - right) / 0.2, (left + right) / 0.2
+def stick_from_wheels(left: float, right: float, maximum: float = PWM_LIMIT) -> tuple[float, float]:
+    """Inverse of safety.differential at `maximum`, so Board.move reproduces left/right."""
+    return (left - right) / (2 * maximum), (left + right) / (2 * maximum)
 
 
 class NavBridge:
@@ -240,14 +242,15 @@ class NavBridge:
             )
             x, y = stick_from_wheels(left, right)
             board.move(
-                Stick(
+                maximum=PWM_LIMIT,
+                stick=Stick(
                     target="wheels",
                     x=x,
                     y=y,
                     lease=self.lease,
                     challenge=board.guard.challenge(),
                     sequence=self.sequence,
-                )
+                ),
             )
             self.last_command_at = self.clock()
         return {"ok": True}

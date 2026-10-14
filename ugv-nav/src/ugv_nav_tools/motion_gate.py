@@ -12,9 +12,10 @@ from dataclasses import dataclass
 
 STALE_SECONDS = 0.35
 MIN_FRONT_RAYS = 10
-FRONT_STOP_M = 0.40
+# 2026-10-14, user-approved with the vendor 0.15 m robot radius (was 0.40 / 0.36 m).
+FRONT_STOP_M = 0.30
 NEAR_WALL_MAX_TURN = 0.15
-TURN_CLEAR_RADIUS_M = 0.36
+TURN_CLEAR_RADIUS_M = 0.25
 # base_lidar_link is yawed +90 deg on this car, so the robot front is -90 deg in the scan.
 LIDAR_MOUNT_YAW = math.pi / 2
 FRONT_HALF_WIDTH = math.pi / 4
@@ -100,5 +101,5 @@ def gate(
         if angular and turn_clear():
             turn = max(-NEAR_WALL_MAX_TURN, min(NEAR_WALL_MAX_TURN, angular))
             return Decision(0.0, turn, stop=False, reason="near wall: verified-clear turn only")
-        return Decision(0.0, 0.0, stop=True, reason="front < 0.40 m and turn space not verified")
+        return Decision(0.0, 0.0, stop=True, reason="front obstacle and turn space not verified")
     return Decision(linear, angular, stop=False)

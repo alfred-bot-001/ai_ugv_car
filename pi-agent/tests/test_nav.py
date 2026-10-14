@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 from pydantic import ValidationError
-from tvpet_pi.hardware import Board
+from tvpet_pi.hardware import RUNAWAY_SPEED, Board
 from tvpet_pi.nav import (
     PWM_LIMIT,
     REQUEST,
@@ -22,6 +22,7 @@ from tvpet_pi.nav import (
     stick_from_wheels,
     wheel_targets,
 )
+from tvpet_pi.protocol import Stick
 from tvpet_pi.safety import Guard, differential
 
 TELEMETRY = b'{"T":1001,"L":0,"R":0,"v":12.1,"pan":0,"tilt":0}\n'
@@ -71,8 +72,8 @@ def test_requests_are_bounded_and_strict() -> None:
     assert REQUEST.validate_python({"op": "cmd", "linear": 0.05, "angular": -0.2}).linear == 0.05
     for bad in (
         {"op": "cmd", "linear": -0.01, "angular": 0},
-        {"op": "cmd", "linear": 0.09, "angular": 0},
-        {"op": "cmd", "linear": 0, "angular": 0.31},
+        {"op": "cmd", "linear": 0.13, "angular": 0},
+        {"op": "cmd", "linear": 0, "angular": 0.61},
         {"op": "cmd", "linear": float("nan"), "angular": 0},
         {"op": "cmd", "linear": 0, "angular": 0, "extra": 1},
         {"op": "drive"},
@@ -84,8 +85,10 @@ def test_requests_are_bounded_and_strict() -> None:
 def test_wheel_mapping_round_trips_through_board_differential() -> None:
     left, right = wheel_targets(0.05, 0.2)
     assert right - left == pytest.approx(0.2 * 0.17452 * 2.0)
-    for wheels in ((0.08, 0.08), (0.08, 0.0), (0.0, -0.08), (0.03, 0.05)):
-        assert differential(*stick_from_wheels(*wheels)) == pytest.approx(wheels)
+    for wheels in ((0.18, 0.18), (0.18, 0.0), (0.0, -0.18), (0.03, 0.05), (0.18, -0.18)):
+        x, y = stick_from_wheels(*wheels)
+        assert max(abs(x), abs(y)) <= 1
+        assert differential(x, y, PWM_LIMIT) == pytest.approx(wheels)
 
 
 def test_wheel_pi_clamps_and_never_reverses_a_forward_wheel() -> None:
@@ -93,7 +96,7 @@ def test_wheel_pi_clamps_and_never_reverses_a_forward_wheel() -> None:
     assert controller.step((0.05, 0.05), (0.05, 0.05), 0.05) == pytest.approx((0.05, 0.05))
     assert controller.step((0.02, -0.02), (0.2, -0.2), 0.1) == (0.0, 0.0)
     for _ in range(200):
-        out = controller.step((0.08, -0.08), (0.0, 0.0), 0.1)
+        out = controller.step((PWM_LIMIT, -PWM_LIMIT), (0.0, 0.0), 0.1)
     assert out == (PWM_LIMIT, -PWM_LIMIT)
     assert controller.integral == [0.05, -0.05]
     controller.reset()
@@ -251,6 +254,30 @@ def test_socket_round_trip_and_permissions(rig: tuple[NavBridge, Mock]) -> None:
         for thread in nav.threads:
             thread.join(timeout=2)
         assert not path.exists()
+
+
+def test_joystick_stays_at_010_while_nav_may_reach_018(rig: tuple[NavBridge, Mock]) -> None:
+    nav, uart = rig
+    guard = nav.board.guard
+    guard.heartbeat()
+    lease = nav.board.acquire()
+    stick = Stick(target="wheels", x=0, y=1, lease=lease, challenge=guard.challenge(), sequence=1)
+    nav.board.move(stick)
+    assert wheel_writes(uart)[-1] == {"T": 1, "L": 0.1, "R": 0.1}
+    stick = Stick(target="wheels", x=0, y=1, lease=lease, challenge=guard.challenge(), sequence=2)
+    nav.board.move(stick, maximum=PWM_LIMIT)
+    assert wheel_writes(uart)[-1] == {"T": 1, "L": PWM_LIMIT, "R": PWM_LIMIT}
+    nav.board.stop()
+
+
+def test_runaway_threshold_sits_above_nav_ceiling(rig: tuple[NavBridge, Mock]) -> None:
+    board = rig[0].board
+    assert PWM_LIMIT < RUNAWAY_SPEED
+    board.telemetry = {"L": 0.25, "R": 0.25, "v": 12.0, "pan": 0, "tilt": 0}
+    board.received_at = time.monotonic()
+    assert board.health_error() == ""
+    board.telemetry["L"] = 0.31
+    assert "速度" in board.health_error()
 
 
 def test_board_health_allows_half_degree_servo_settling(rig: tuple[NavBridge, Mock]) -> None:

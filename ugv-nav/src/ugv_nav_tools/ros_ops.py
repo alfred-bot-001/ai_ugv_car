@@ -27,6 +27,10 @@ from .bridge_node import SOCKET
 from .route import Pose, goal_errors, quaternion_to_yaw, within_tolerance, yaw_to_quaternion
 
 SUCCEEDED = 4
+SEND_ATTEMPTS = 2
+# Humble/FastDDS: a request sent right after discovery can lose its response because the
+# reply reader is not matched yet. Spin briefly after discovery before the first call.
+MATCH_SETTLE_S = 0.5
 CANCEL_ENDPOINTS = (
     "/navigate_to_pose/_action/cancel_goal",
     "/navigate_through_poses/_action/cancel_goal",
@@ -81,14 +85,20 @@ class Operator:
         self.spin(3.0)
         return self.pose()
 
-    def cancel(self) -> list[str]:
-        cancelled = []
+    def cancel(self) -> dict[str, list[str]]:
+        """Best effort: pi-agent's arm file and watchdog, not this call, guarantee a stop."""
+        outcome: dict[str, list[str]] = {"cancelled": [], "unanswered": []}
         for endpoint in CANCEL_ENDPOINTS:
             client = self.node.create_client(CancelGoal, endpoint)
-            if client.wait_for_service(timeout_sec=2):
-                self.wait(client.call_async(CancelGoal.Request()), 8)
-                cancelled.append(endpoint)
-        return cancelled
+            if not client.wait_for_service(timeout_sec=2):
+                continue
+            self.spin(MATCH_SETTLE_S)
+            try:
+                self.wait(client.call_async(CancelGoal.Request()), 4)
+                outcome["cancelled"].append(endpoint)
+            except TimeoutError:
+                outcome["unanswered"].append(endpoint)
+        return outcome
 
     def stamped(self, pose: Pose) -> Any:
         goal = PoseStamped()
@@ -103,6 +113,7 @@ class Operator:
         planner = ActionClient(self.node, ComputePathToPose, "compute_path_to_pose")
         if not planner.wait_for_server(timeout_sec=10):
             raise RuntimeError("planner unavailable")
+        self.spin(MATCH_SETTLE_S)
         request = ComputePathToPose.Goal()
         request.goal, request.planner_id, request.use_start = self.stamped(goal), "GridBased", False
         handle = self.wait(planner.send_goal_async(request), 10)
@@ -119,9 +130,22 @@ class Operator:
         navigator = ActionClient(self.node, NavigateToPose, "navigate_to_pose")
         if not navigator.wait_for_server(timeout_sec=5):
             raise RuntimeError("navigator unavailable")
-        drive = NavigateToPose.Goal()
-        drive.pose = self.stamped(goal)
-        handle = self.wait(navigator.send_goal_async(drive), 10)
+        self.spin(MATCH_SETTLE_S)
+        handle = None
+        for attempt in range(1, SEND_ATTEMPTS + 1):
+            drive = NavigateToPose.Goal()
+            drive.pose = self.stamped(goal)
+            try:
+                handle = self.wait(navigator.send_goal_async(drive), 10)
+                break
+            except TimeoutError:
+                # Humble can drop the goal response under load; the server may still be
+                # running an orphan goal, so cancel everything before trying again.
+                result["send_retries"] = attempt
+                self.cancel()
+        if handle is None:
+            result["error"] = "navigator did not answer the goal"
+            return result
         if not handle.accepted:
             result["error"] = "navigator rejected goal"
             return result
@@ -171,13 +195,20 @@ def main() -> None:
         if args.op == "pose":
             output: dict[str, Any] = asdict(operator.pose())
         elif args.op == "cancel":
-            output = {"cancelled": operator.cancel()}
+            output = dict(operator.cancel())
         elif args.op == "set-pose":
             output = asdict(operator.set_pose(Pose(args.x, args.y, args.yaw)))
         else:
             if not 1 <= args.timeout <= 110:
                 raise ValueError("timeout must be 1..110 s (pi-agent arms at most 120 s)")
-            output = operator.navigate(Pose(args.x, args.y, args.yaw), args.timeout)
+            try:
+                output = operator.navigate(Pose(args.x, args.y, args.yaw), args.timeout)
+            except Exception as error:  # noqa: BLE001 - report every failure as JSON
+                output = {"ok": False, "error": f"{type(error).__name__}: {error}"}
+                try:
+                    BoardClient(SOCKET).stop()
+                except BoardError as stop_error:
+                    output["stop_error"] = str(stop_error)
     finally:
         operator.node.destroy_node()
         rclpy.shutdown()
