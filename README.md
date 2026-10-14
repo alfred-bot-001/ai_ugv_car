@@ -2,7 +2,7 @@
 
 老三小车（Waveshare UGV + 树莓派）的操纵与管理项目。老大 Mac Mini 运行主控台，提供 HTTPS 登录、设备状态、视频/拍照、听音/转写、发声、圆盘控制、家庭人脸与人物照片标注；老三 Pi 运行设备代理，主动通过 WSS 连接 Mini，独占 UART/M2/摄像头，并在本地执行租约、看门狗和失联停止。
 
-正式入口：[car.aimaker.vip](https://car.aimaker.vip/)。当前版本为主控台 0.6.2 / Pi 0.4.0 / ugv-nav 0.1.0。
+正式入口：[car.aimaker.vip](https://car.aimaker.vip/)。当前版本为主控台 0.6.2 / Pi 0.4.0 / ugv-nav 0.2.0。
 
 | 代码包 | 运行位置 | 内容 |
 | --- | --- | --- |

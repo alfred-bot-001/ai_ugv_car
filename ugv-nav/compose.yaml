@@ -1,7 +1,7 @@
 name: ugv-nav
 services:
   ugv-nav:
-    image: ai-ugv-car/ugv-nav:${UGV_NAV_VERSION:-0.1.0}
+    image: ai-ugv-car/ugv-nav:${UGV_NAV_VERSION:-0.2.0}
     build: .
     container_name: ugv-nav
     network_mode: host
@@ -10,12 +10,18 @@ services:
     group_add: ["20"]
     devices:
       - /dev/ugv_lidar:/dev/ugv_lidar
+    # pi-agent's 0600 socket (owner ws, uid 1000 = container user); read-only bind.
+    volumes:
+      - /home/ws/deploy/ai-tv-pet-agent/nav:/board:ro
+    environment:
+      UGV_NAV_LAUNCH: ${UGV_NAV_LAUNCH:-n1_odometry}
     read_only: true
     tmpfs: [/tmp]
     cpus: 2.0
     mem_limit: 1536m
     healthcheck:
-      test: ["CMD", "bash", "-c", "source /opt/ugv_ws/install/setup.bash && timeout 8 ros2 topic hz /scan --window 10 2>/dev/null | grep -q 'average rate'"]
+      # Board telemetry fresh (written by the bridge every second) and /scan flowing.
+      test: ["CMD", "bash", "-c", "python3 -c \"import json,time,sys; b=json.load(open('/tmp/board_health.json')); sys.exit(not (0 <= time.monotonic()-b['monotonic'] < 4 and b['age'] < 0.3))\" && source /opt/ugv_ws/install/setup.bash && timeout 8 ros2 topic hz /scan --window 10 2>/dev/null | grep -q 'average rate'"]
       interval: 30s
       timeout: 15s
       retries: 3

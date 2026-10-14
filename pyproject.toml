@@ -33,7 +33,10 @@ files = ["robot-console/src", "pi-agent/src", "ugv-nav/src"]
 
 [[tool.mypy.overrides]]
 # ROS2 Python packages come from the ROS install inside the container, not PyPI.
-module = ["rclpy.*", "sensor_msgs.*", "launch.*", "launch_ros.*", "ament_index_python.*", "xacro"]
+module = [
+  "rclpy.*", "sensor_msgs.*", "geometry_msgs.*", "nav_msgs.*", "std_msgs.*", "tf2_ros.*",
+  "launch.*", "launch_ros.*", "ament_index_python.*", "xacro",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -2,12 +2,13 @@
 
 ROS2 Humble 容器，负责激光雷达、TF，以及后续阶段的 SLAM 与 Nav2。容器只映射雷达，**不接触** `/dev/ttyAMA0`、M2 或声卡，运动始终经过 `pi-agent`。设计与验收记录见 [ROS2 建图与自主导航设计](../docs/ros-navigation-design.md)。
 
-当前阶段：**N0**，只运行雷达驱动、`robot_state_publisher` 和 `joint_state_publisher`。
+当前阶段：**N1**（`n1_odometry.launch.py`，默认）。在 N0 的雷达、URDF 基础上增加 Pi 代理桥（`ugv-board-bridge`）、RF2O 激光里程计和 EKF。车辆能否运动仍由 Pi 代理的 `arm.json` 决定，容器只读挂载该目录。设置 `UGV_NAV_LAUNCH=n0_lidar` 可以只跑雷达。
 
 | 路径 | 内容 |
 | --- | --- |
 | `Dockerfile` | 基于 `ros:humble-ros-base-jammy`，从 `ugv_ws@9d2e894` 稀疏检出 `ldlidar`、`ugv_description` 并编译 |
-| `launch/` | ROS launch 文件（N0：`n0_lidar.launch.py`） |
+| `launch/` | ROS launch 文件：`n0_lidar`（雷达 + TF）、`n1_odometry`（加桥、RF2O、EKF） |
+| `config/` | EKF 参数（10-13 实车验收版） |
 | `src/ugv_nav_tools/` | 本项目的 Python 工具包，以 wheel 形式装进镜像；纯逻辑与 rclpy 部分分开，纯逻辑可在开发机测试 |
 | `tests/` | 由仓库根目录的 `uv run pytest` 运行 |
 | `udev/99-ugv-car.rules` | `/dev/ugv_lidar` 稳定名称 |
@@ -27,7 +28,7 @@ rsync -a --delete --exclude __pycache__ --exclude '*.egg-info' ugv-nav/ agent003
 
 ```sh
 cd /home/ws/deploy/ugv-nav/src
-sudo docker build -t ai-ugv-car/ugv-nav:0.1.0 . > ../build-0.1.0.log 2>&1
+sudo docker build -t ai-ugv-car/ugv-nav:0.2.0 . > ../build-0.2.0.log 2>&1
 sudo docker compose up -d
 sudo docker exec ugv-nav bash -c "source /opt/ugv_ws/install/setup.bash && ugv-scan-report --seconds 10"
 ```

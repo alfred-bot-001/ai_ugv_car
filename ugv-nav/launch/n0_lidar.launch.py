@@ -20,8 +20,10 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             DeclareLaunchArgument("port_name", default_value="/dev/ugv_lidar"),
-            # N0 keeps the full 360 degrees so the body occlusion can be measured.
-            DeclareLaunchArgument("enable_angle_crop_func", default_value="false"),
+            # The driver crops in device degrees; with laser_scan_dir the ROS bearing is
+            # 360 - device. Device 208-318 masks ROS 42-152, the measured rear body arc
+            # (N0: 45-150). Pass false to measure the raw occlusion again.
+            DeclareLaunchArgument("enable_angle_crop_func", default_value="true"),
             Node(
                 package="ldlidar",
                 executable="ldlidar_node",
@@ -36,8 +38,8 @@ def generate_launch_description() -> LaunchDescription:
                         "port_baudrate": 230400,
                         "laser_scan_dir": True,
                         "enable_angle_crop_func": LaunchConfiguration("enable_angle_crop_func"),
-                        "angle_crop_min": 225.0,
-                        "angle_crop_max": 315.0,
+                        "angle_crop_min": 208.0,
+                        "angle_crop_max": 318.0,
                         "bins": 480,
                     }
                 ],

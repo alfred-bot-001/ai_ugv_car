@@ -188,6 +188,21 @@ Pi ↔ 容器的 UNIX 套接字消息：`telemetry`、`cmd_vel`、`heartbeat{sca
 - 遗留：`ttyACM1`（CH343，序列号 56F2035721）没有输出、没有程序使用，用途待现场确认，在此之前任何服务都不打开它。Pi 的内核没有启用 memory cgroup（`docker stats` 显示 0B），`mem_limit` 实际上不生效；N3 前评估是否在 `cmdline.txt` 启用 `cgroup_enable=memory`（需要重启）。
 - 运维注意：雷达串口参数（`stty`）对所有打开它的进程共享。2026-10-14 排查时曾用 `stty` 改波特率，导致当时运行的 `ai-home-nav` 读到乱码，恢复 230400 后正常。**不要在驱动运行时对 `/dev/ugv_lidar` 执行 `stty`**。
 
+### 7.2 N1 实施记录（2026-10-14，静止部分）
+
+- **Pi 代理 0.4.0**：车上热改的导航桥正式纳入为 `tvpet_pi/nav.py`，见 §2.4 和[部署记录](control-console-deployment.md)。
+- **ugv-nav 0.2.0**（`ai-ugv-car-nav-tools` 0.2.0）：
+  - `board_client`：Pi 代理套接字客户端。
+  - `wheel_odometry`：`odl/odr` 按米积分，单次跳变超过 0.5 m 的样本丢弃；只作诊断，不进 EKF。
+  - `motion_gate`：移植自 10-13 桥并补测试。激光里程或扫描超过 0.35 s 未更新就停车；前方 ±45° 有效射线少于 10 条也停车；前方 0.40 m 内只允许地图确认四周空旷后、≤0.15 rad/s 的原地转向。
+  - `bridge_node`：rclpy 节点。
+  - 共 13 项新测试。
+- 镜像新增 `rf2o_laser_odometry`（来自 `ugv_ws@9d2e894`）和 `robot_localization`。EKF 采用 10-13 验收过的配置（[`ugv-nav/config/ekf_laser.yaml`](../ugv-nav/config/ekf_laser.yaml)），只融合 RF2O 的 x/y/yaw，并独占 `odom → base_footprint` 这一 TF。
+- 驱动角度裁剪：设备角度 208°～318°，对应 ROS 42°～152°。车尾车体回波改为 NaN，不再进入 RF2O。有效点从 436 降到 312。
+- 容器以只读方式挂载 `ai-tv-pet-agent/nav`：可以连接 `board.sock`、读取 `arm.json`，但**不能写 arm.json**，因此容器无法自行授权运动。
+- 静止实测：`/scan` 10.0 Hz、`/odom_rf2o` 10.0 Hz、`/odom` 20.0 Hz、`/odom_wheel` 和 `/ugv/voltage` 约 17 Hz。健康检查 healthy，容器 CPU 约 12%。静止 30 s 漂移：EKF 位置 0.39 cm、yaw +0.77°（约 1.5°/min）；轮式里程为 0。
+- 尚未进行：任何运动。下一步是标定（`T1`+PI 实际速度、`odl/odr` 距离、转向），需要用户在场、清场，先架空，地面部分须先完成 C3 地面制动验收。
+
 **前置条件**：TODO 中“C3 扩展验收：地面低速/机械制动距离”必须在 N1 地面部分之前完成。目前只有车轮架空的停止测量。
 
 ## 8. 资源与风险
