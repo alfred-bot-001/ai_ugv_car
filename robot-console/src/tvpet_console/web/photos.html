@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>人物照片标注 · 老三</title>
+  <link rel="stylesheet" href="/static/photos.css">
+  <script src="/static/photos.js" defer></script>
+</head>
+<body>
+  <aside class="photo-sidebar">
+    <a class="brand" href="/" aria-label="返回老三设备控制台">
+      <span class="brand-tile"><img src="/static/assets/chip.svg" alt=""></span>
+      <span><strong>老三 · ROBOT</strong><small>设备管理控制台</small></span>
+    </a>
+    <nav aria-label="控制台导航">
+      <a href="/"><img src="/static/assets/grid.svg" alt="">设备控制台</a>
+      <a href="/photos" aria-current="page"><img src="/static/assets/camera.svg" alt="">人物照片标注</a>
+    </nav>
+    <div class="sidebar-note"><span class="mini-dot"></span> 老大 Mini · 本地资料<small>从机器识别，到人工确认。</small></div>
+  </aside>
+
+  <main class="photo-workspace">
+    <header class="page-header">
+      <div><div class="eyebrow">ROBOT OBSERVATION / HUMAN REVIEW</div><h1>人物照片标注</h1><p>看一眼，纠正人物与动作。把确认过的照片留作训练资料。</p></div>
+      <div class="header-actions"><a class="button secondary" href="/">返回控制台</a><button id="export-category" type="button">导出分类照片包</button><a id="export-link" class="button text-export" href="/api/v1/photo-labels/export" download="人物照片人工标注.jsonl">仅导出标注清单</a></div>
+    </header>
+
+    <section class="summary-strip" aria-label="照片审核统计">
+      <div><span>采集照片</span><strong id="stat-total">—</strong></div>
+      <div><span>等待审核</span><strong id="stat-pending">—</strong></div>
+      <div><span>人工确认</span><strong id="stat-confirmed">—</strong></div>
+      <div><span>已排除</span><strong id="stat-excluded">—</strong></div>
+      <p><span class="mini-dot"></span><span id="original-count">正在读取照片…</span><small>人工标注单独保存；识别结果保留供对照。</small></p>
+    </section>
+
+    <div id="page-notice" class="notice" role="status" hidden></div>
+
+    <section class="family-categories" aria-label="按人工标注的人物分类"><div><h2>人物分类</h2><p>数量只统计人工已确认的照片；点选人物后查看其人工标注。</p></div><div id="category-buttons" class="category-buttons"><button type="button" data-category="儿子">儿子 <span>—</span></button><button type="button" data-category="爸爸">爸爸 <span>—</span></button><button type="button" data-category="妈妈">妈妈 <span>—</span></button></div></section>
+
+    <div class="review-layout" id="review-layout">
+      <section class="photo-library" aria-labelledby="library-heading">
+        <div class="library-heading"><h2 id="library-heading">采集列表</h2><button id="refresh-list" class="icon-button" type="button" aria-label="刷新采集列表">↻</button></div>
+        <div class="status-filters" role="group" aria-label="按审核状态筛选">
+          <button type="button" data-filter="pending" aria-pressed="false">待审核</button>
+          <button type="button" data-filter="confirmed" aria-pressed="false">已确认</button>
+          <button type="button" data-filter="excluded" aria-pressed="false">已排除</button>
+          <button type="button" data-filter="all" aria-pressed="true">全部</button>
+        </div>
+        <div class="classification-filters"><label>人物<select id="identity-filter"><option value="">全部人物</option><option value="儿子">儿子</option><option value="爸爸">爸爸</option><option value="妈妈">妈妈</option></select></label><label>姿态<select id="posture-filter"><option value="">全部姿态</option><option value="standing">站着</option><option value="sitting">坐着</option><option value="lying">躺着</option><option value="squatting">蹲着</option><option value="curled">蜷缩</option><option value="unknown">无法判断</option><option value="other">其他</option></select></label><label class="source-filter">标注来源<select id="label-source"><option value="effective">包含机器识别</option><option value="manual">仅人工标注</option></select></label></div>
+        <form id="search-form" class="search-form" role="search"><label class="sr-only" for="photo-search">搜索识别或标注的人物</label><input id="photo-search" type="search" maxlength="64" placeholder="搜索人物，如爸爸、儿子" autocomplete="off"><button type="submit">搜索</button></form>
+        <section class="batch-toolbar" aria-label="批量处理照片"><div class="batch-selection"><label><input id="select-page" type="checkbox">本页全选</label><strong id="selection-count" aria-live="polite">已选 0 张</strong><button id="clear-selection" type="button" class="text-button">清除</button></div><div class="batch-actions"><button id="export-selected" type="button">导出选中照片</button><button id="delete-selected" type="button" class="exclude-button">批量删除</button></div><p>跨页保留选择 · 最多 200 张 · 导出仅含已确认标注</p><div id="selection-conflict" class="selection-conflict" role="alert" hidden><span>部分标注已更新，请先核对最新记录。</span><button id="sync-selection" type="button">重新同步选择</button></div></section>
+        <div class="list-caption"><span id="list-count">正在读取…</span><span>每页 24 张</span></div>
+        <div id="photo-list" class="photo-list" aria-busy="true" aria-label="采集照片"></div>
+        <div id="list-empty" class="empty-state" hidden><span class="empty-symbol" aria-hidden="true">▧</span><h3 id="empty-title">这里还没有照片</h3><p id="empty-description">有人出现在镜头里时，老三会继续采集。</p><button id="empty-retry" type="button" hidden>重新读取</button></div>
+        <div class="pagination"><button id="page-prev" type="button" disabled>上一页</button><span id="page-indicator">—</span><button id="page-next" type="button" disabled>下一页</button></div>
+      </section>
+
+      <section class="review-workspace" id="detail-panel" aria-labelledby="detail-heading" aria-busy="false">
+        <div id="detail-empty" class="detail-placeholder"><div class="viewfinder" aria-hidden="true"><span>人</span></div><h2>选一张照片，开始标注</h2><p>左侧是采集记录。逐个人物核对身份、姿态和动作，确认后单独保存。</p><div class="review-legend"><span><i class="legend-machine"></i>机器识别</span><span><i class="legend-human"></i>人工确认</span></div></div>
+        <div id="detail-loading" class="detail-loading" role="status" hidden>正在读取照片与识别信息…</div>
+        <article id="photo-detail" hidden>
+          <header class="detail-header"><div><button id="back-to-list" type="button" class="text-button">← 返回照片列表</button><h2 id="detail-heading">照片审核</h2><p id="detail-time">—</p></div><span id="detail-status" class="status-tag pending">待审核</span></header>
+          <div class="viewer-toolbar"><div class="image-modes" role="group" aria-label="照片显示方式"><button id="show-annotated" type="button" aria-pressed="true">识别标注图</button><button id="show-original" type="button" aria-pressed="false">无标注原片</button></div><button id="zoom-image" type="button" class="text-button">放大查看 ↗</button></div>
+          <div class="photo-stage"><img id="detail-image" alt="采集照片" draggable="false"><div id="image-error" class="image-error" role="status" hidden>照片读取失败，请重新载入。</div><span id="image-kind" class="image-kind">机器识别 · 采集时标注</span></div>
+          <p id="original-note" class="image-note">图中保留采集时的机器标注，人工更正在下方保存。</p>
+          <section class="posture-overview" aria-labelledby="posture-heading"><div class="posture-title"><h3 id="posture-heading">姿态判断</h3><span>站着 / 坐着 / 躺着</span></div><div class="posture-comparison"><div><span class="posture-source">机器判断</span><p id="machine-postures">尚未读取</p></div><div><span class="posture-source human-source">人工姿态</span><p id="manual-postures">尚未人工确认</p></div></div><small>姿态依据人体关键点；仅有人脸时无法判断站、坐或躺。动作在下方单独标注。</small></section>
+          <dl class="capture-info"><div><dt>帧编号</dt><dd id="detail-sequence">—</dd></div><div><dt>识别模型</dt><dd id="detail-model">—</dd></div><div><dt>分类规则</dt><dd id="detail-rules">—</dd></div></dl>
+
+          <form id="annotation-form" novalidate>
+            <div class="annotation-heading"><div><span class="section-kicker">人工审核</span><h3>这张照片里的人</h3><p>身份和分类可直接更正。误检请移除，漏检请添加。</p></div><button id="add-person" type="button">＋ 添加遗漏人物</button></div>
+            <div id="people-editor" class="people-editor"></div>
+            <p id="no-people" class="no-people" hidden>没有可标注的人物。可添加遗漏人物，或将这张照片排除。</p>
+            <p class="score-explanation">姿态规则分数用于比较识别结果；人脸相似度不是身份正确的概率。</p>
+            <label class="notes-label" for="annotation-notes">审核备注 <span>选填</span></label><textarea id="annotation-notes" rows="3" maxlength="1000" placeholder="例如：人脸被遮挡；左边是儿子；正在坐着挥手。"></textarea>
+            <p id="annotation-history" class="annotation-history" hidden></p>
+            <div id="editor-notice" class="notice" role="status" hidden></div>
+            <div id="conflict-notice" class="conflict-notice" role="alert" hidden><strong>这张照片的标注已被更新</strong><p>本次修改尚未写入，请重新读取最新标注后再核对。</p><button id="reload-detail" type="button">重新读取最新标注</button></div>
+            <footer class="editor-footer"><div class="save-state"><span id="dirty-dot" class="mini-dot" hidden></span><span id="save-state" aria-live="polite">尚未人工确认</span></div><div class="save-actions"><button id="exclude-photo" type="button" class="exclude-button">排除照片</button><button id="save-photo" type="submit">确认并保存</button><button id="save-next" type="button" class="primary">保存并看下一张 →</button></div></footer>
+          </form>
+          <nav class="photo-navigation" aria-label="照片导航"><button id="previous-photo" type="button">← 上一张</button><span id="detail-position">—</span><button id="next-photo" type="button">下一张 →</button></nav>
+        </article>
+      </section>
+    </div>
+    <footer class="page-footer"><span>本地审核 · 采集与标注保存在老大 Mini</span><span>仅人工确认的照片进入训练资料</span></footer>
+  </main>
+
+  <datalist id="identity-suggestions"><option value="爸爸"></option><option value="儿子"></option><option value="妈妈"></option><option value="陌生人"></option><option value="未确认"></option></datalist>
+  <dialog id="unsaved-dialog" aria-labelledby="unsaved-title"><h2 id="unsaved-title">还有未保存的修改</h2><p>继续切换会放弃这张照片的修改。返回后，可以先确认保存。</p><div class="dialog-actions"><button id="stay-editing" type="button" class="primary">继续标注</button><button id="discard-changes" type="button">放弃修改并切换</button></div></dialog>
+  <dialog id="exclude-dialog" aria-labelledby="exclude-title"><h2 id="exclude-title">排除这张照片？</h2><p>没有人、严重模糊或不适合作为训练资料时，可以排除。照片和识别结果会保留，之后仍可重新标注。</p><div class="dialog-actions"><button id="cancel-exclude" type="button">继续标注</button><button id="confirm-exclude" type="button" class="exclude-button">确认排除</button></div></dialog>
+  <dialog id="delete-dialog" aria-labelledby="delete-title"><h2 id="delete-title">删除所选记录？</h2><fieldset class="delete-scopes"><legend>删除范围</legend><label><input type="radio" name="delete-scope" value="labels" checked><span><strong>仅人工标注</strong><small>照片和机器识别结果保留</small></span></label><label><input type="radio" name="delete-scope" value="photos"><span><strong>照片、原片和全部标注</strong><small>所选照片将从采集列表移除</small></span></label></fieldset><p id="delete-description">照片和机器识别结果会保留。删除的人工标注不再用于训练，照片回到待审核状态。</p><p id="delete-count" class="delete-count"></p><div class="dialog-actions"><button id="cancel-delete" type="button">取消</button><button id="confirm-delete" type="button" class="exclude-button">确认删除人工标注</button></div></dialog>
+  <dialog id="zoom-dialog" class="zoom-dialog" aria-label="放大查看照片"><div class="zoom-heading"><span id="zoom-title">采集照片</span><button id="zoom-close" type="button" aria-label="关闭放大照片">×</button></div><img id="zoomed-image" alt="放大的采集照片"></dialog>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>

@@ -1,0 +1,27 @@
+[Unit]
+Description=AI TV Pet Raspberry Pi device agent
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ws
+Group=ws
+WorkingDirectory=/home/ws/deploy/ai-tv-pet-agent
+ExecStart=/home/ws/deploy/ai-tv-pet-agent/.venv/bin/tvpet-pi --config /home/ws/deploy/ai-tv-pet-agent/private/agent.json
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=6
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ws/deploy/ai-tv-pet-agent
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

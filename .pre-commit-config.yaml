@@ -1,0 +1,9 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: ^(robot-console|pi-agent)/.*\.py$
+      - id: ruff-format
+        files: ^(robot-console|pi-agent)/.*\.py$

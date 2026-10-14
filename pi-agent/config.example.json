@@ -1,0 +1,12 @@
+{
+  "agent_id": "laosan",
+  "url": "wss://mini.example:8788",
+  "ca_file": "/home/ws/deploy/ai-tv-pet-agent/private/mini-ca.pem",
+  "token_file": "/home/ws/deploy/ai-tv-pet-agent/private/agent.token",
+  "uart": "/dev/ttyAMA0",
+  "camera": "/dev/video0",
+  "m2": "/dev/m2_mic",
+  "motion_evidence": "/home/ws/deploy/ai-tv-pet-agent/private/motion-evidence.json",
+  "pose_python": "",
+  "pose_model": ""
+}

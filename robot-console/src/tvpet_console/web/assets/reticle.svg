@@ -1,0 +1,11 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="52" height="52" viewBox="0 0 52 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Camera reticle" clip-path="url(#clip0_0_182)">
+<path id="Vector" d="M0 26H17M35 26H52M26 0V17M26 35V52" stroke="white" stroke-opacity="0.65"/>
+<path id="Vector_2" d="M26 29C27.6569 29 29 27.6569 29 26C29 24.3431 27.6569 23 26 23C24.3431 23 23 24.3431 23 26C23 27.6569 24.3431 29 26 29Z" stroke="white" stroke-opacity="0.65"/>
+</g>
+<defs>
+<clipPath id="clip0_0_182">
+<rect width="52" height="52" fill="white"/>
+</clipPath>
+</defs>
+</svg>
