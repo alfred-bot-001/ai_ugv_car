@@ -284,3 +284,13 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - 公网 `/health` 为 200、`agent_online=true`，已部署 `app.js` 与源码一致，未登录状态 API 为 401。验证会话已单独撤销，没有保存真实人工标签或删除照片。
 
 发布包和锁文件位于 `releases/0.6.1/`，上一版 console 0.6.0 保留。最终更新前数据库与 LaunchAgent 备份为 `backups/daily50-20261004-161944/`。回滚至 0.6.0 会失去每日额度限制；回滚前须停用后台采样并保存配额账本，后续恢复 0.6.1 时继续使用原账本。
+
+## 2026-10-14 ROS 导航桥正式纳入（Pi 0.4.0）
+
+2026-10-13 曾直接热改车上已安装的代理（新增 `nav_socket.py`、修改 `hardware.py`，版本号仍为 0.3.1）。0.4.0 把这些改动正式纳入仓库，模块为 `tvpet_pi/nav.py`：行为与已验收版本一致，请求改用 pydantic 校验，arm 解析和轮速 PI 拆为纯函数，新增 11 项测试（全部 248 项通过，覆盖率 88.7%）。导航桥只在私有配置设置了 `nav_dir` 时才启动。
+
+- 备份：热改版代码和原配置在 Pi `backups/20261014-pre-0.4.0/`（`venv-tvpet_pi/`、`pose-venv-tvpet_pi/`、`agent.json`）。
+- 发布：Pi `releases/0.4.0/ai_tv_pet_pi_agent-0.4.0-py3-none-any.whl`，同时装入 `.venv` 与 `pose-venv`；私有 `agent.json` 新增 `"nav_dir": "/home/ws/deploy/ai-tv-pet-agent/nav"`（权限仍为 0600）。不在安装记录里的旧 `nav_socket.py` 已删除，备份中保留。
+- 实机核验：服务 active；`board.sock` 为 0600；`status` 返回完整 T1001 遥测（年龄 0.27 s，`nav_owned=false`）；`arm.json` 为 `enabled:false` 时运动请求返回 `motion is disarmed`；非法请求被拒绝；Mini `/health` 显示 `agent_online: true`。
+- 回滚：停服务，把备份目录复制回两个环境的 `site-packages/tvpet_pi/`，或安装 `releases/0.3.1` 的 wheel 并去掉 `nav_dir`；最后启动服务。
+- Mini 的协议包仍为 0.3.1；0.4.0 没有改动 Mini 与 Pi 之间的协议，Mini 不需要更新。

@@ -7,6 +7,7 @@
   "camera": "/dev/video0",
   "m2": "/dev/m2_mic",
   "motion_evidence": "/home/ws/deploy/ai-tv-pet-agent/private/motion-evidence.json",
+  "nav_dir": "/home/ws/deploy/ai-tv-pet-agent/nav",
   "pose_python": "",
   "pose_model": ""
 }

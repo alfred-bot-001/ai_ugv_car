@@ -23,6 +23,7 @@ from websockets.typing import Subprotocol
 from .capture import Camera, CaptureWorker, Frame, Microphone
 from .hardware import Board, system_status
 from .m2 import M2Link
+from .nav import NavBridge
 from .pose_process import PoseProcess
 from .protocol import AGENT_PROTOCOL, Stick
 from .safety import Guard
@@ -39,6 +40,8 @@ class AgentRuntime:
         self.guard = Guard()
         evidence = Path(str(config["motion_evidence"])) if config.get("motion_evidence") else None
         self.board = Board(str(config.get("uart", "/dev/ttyAMA0")), self.guard, evidence)
+        nav_dir = config.get("nav_dir")
+        self.nav = NavBridge(self.board, Path(str(nav_dir))) if nav_dir else None
         self.m2 = M2Link(str(config.get("m2", "/dev/m2_mic")))
         self.camera = CaptureWorker(Camera(str(config.get("camera", "/dev/video0"))))
         self.microphone = CaptureWorker(Microphone())
@@ -331,6 +334,8 @@ class AgentRuntime:
         if not str(self.config["url"]).startswith("wss://"):
             raise ValueError("WSS is required")
         self.board.open()
+        if self.nav and self.board.serial is not None:
+            self.nav.start()
         self.m2.open()
         try:
             while True:

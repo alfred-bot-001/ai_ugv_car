@@ -64,7 +64,7 @@
 - [x] 完成 [设计稿](docs/ros-navigation-design.md)：ROS 容器 + pi-agent 桥，pi-agent 仍是唯一 UART 所有者。
 - [x] N0：udev `/dev/ugv_lidar`、停用错误的 xunfei_mic 规则；`ai-ugv-car/ugv-nav:0.1.0` 构建并运行；/scan 10.0 Hz、遮挡 45–150°（雷达坐标）；旧 `ai-home-nav` 已停止并取消自启（保留）。
 - [ ] 查明 ttyACM1（CH343，56F2035721）用途（需现场）。
-- [ ] 把车上热改的 `nav_socket.py` / `hardware.py` 纳入仓库并补测试，Pi 代理升 0.4.0 正式部署（N1 第一步）。
+- [x] 车上热改的导航桥纳入仓库为 `tvpet_pi/nav.py`，11 项测试；Pi 代理 0.4.0 已部署并实机核验（只读状态、未授权拒绝运动）。
 - [ ] N1：里程单位与 T13 速度标定，IMU 可用性评估（前置：C3 地面制动验收）。
 - [ ] N2：主控台遥控建图、地图保存与查看。
 - [ ] N3：AMCL + DWA 导航、导航租约与全部停止场景验收。

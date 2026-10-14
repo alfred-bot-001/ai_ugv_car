@@ -1,0 +1,262 @@
+"""The ROS bridge may only move the chassis inside every existing safety gate."""
+
+import json
+import os
+import socket
+import tempfile
+import time
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+from unittest.mock import Mock
+
+import pytest
+from pydantic import ValidationError
+from tvpet_pi.hardware import Board
+from tvpet_pi.nav import (
+    PWM_LIMIT,
+    REQUEST,
+    NavBridge,
+    WheelPI,
+    read_arm,
+    stick_from_wheels,
+    wheel_targets,
+)
+from tvpet_pi.safety import Guard, differential
+
+TELEMETRY = b'{"T":1001,"L":0,"R":0,"v":12.1,"pan":0,"tilt":0}\n'
+
+
+def write_arm(root: Path, **changes: Any) -> None:
+    value = {
+        "enabled": True,
+        "id": "session-1",
+        "expires_at": time.time() + 60,
+        "units_verified": True,
+        "calibrated": True,
+    } | changes
+    path = root / "arm.json"
+    path.write_text(json.dumps(value))
+    os.chmod(path, 0o600)
+
+
+def test_read_arm_requires_every_operator_condition(tmp_path: Path) -> None:
+    write_arm(tmp_path)
+    arm = read_arm(tmp_path / "arm.json", time.time())
+    assert arm.session_id == "session-1" and not arm.calibration and 0 < arm.remaining <= 60
+    now = time.time()
+    rejected: list[dict[str, Any]] = [
+        {"enabled": False},
+        {"expires_at": now - 1},
+        {"expires_at": now + 121},
+        {"expires_at": "soon"},
+        {"units_verified": False},
+        {"calibrated": False},
+        {"calibrated": False, "mode": "calibration", "expires_at": now + 30},
+        {"id": ""},
+    ]
+    for changes in rejected:
+        write_arm(tmp_path, **changes)
+        with pytest.raises(ValueError):
+            read_arm(tmp_path / "arm.json", now)
+    write_arm(tmp_path, calibrated=False, mode="calibration", expires_at=now + 4)
+    assert read_arm(tmp_path / "arm.json", now).calibration
+    write_arm(tmp_path)
+    os.chmod(tmp_path / "arm.json", 0o644)
+    with pytest.raises(ValueError, match="0600"):
+        read_arm(tmp_path / "arm.json", now)
+
+
+def test_requests_are_bounded_and_strict() -> None:
+    assert REQUEST.validate_python({"op": "cmd", "linear": 0.05, "angular": -0.2}).linear == 0.05
+    for bad in (
+        {"op": "cmd", "linear": -0.01, "angular": 0},
+        {"op": "cmd", "linear": 0.09, "angular": 0},
+        {"op": "cmd", "linear": 0, "angular": 0.31},
+        {"op": "cmd", "linear": float("nan"), "angular": 0},
+        {"op": "cmd", "linear": 0, "angular": 0, "extra": 1},
+        {"op": "drive"},
+    ):
+        with pytest.raises(ValidationError):
+            REQUEST.validate_python(bad)
+
+
+def test_wheel_mapping_round_trips_through_board_differential() -> None:
+    left, right = wheel_targets(0.05, 0.2)
+    assert right - left == pytest.approx(0.2 * 0.17452 * 2.0)
+    for wheels in ((0.08, 0.08), (0.08, 0.0), (0.0, -0.08), (0.03, 0.05)):
+        assert differential(*stick_from_wheels(*wheels)) == pytest.approx(wheels)
+
+
+def test_wheel_pi_clamps_and_never_reverses_a_forward_wheel() -> None:
+    controller = WheelPI()
+    assert controller.step((0.05, 0.05), (0.05, 0.05), 0.05) == pytest.approx((0.05, 0.05))
+    assert controller.step((0.02, -0.02), (0.2, -0.2), 0.1) == (0.0, 0.0)
+    for _ in range(200):
+        out = controller.step((0.08, -0.08), (0.0, 0.0), 0.1)
+    assert out == (PWM_LIMIT, -PWM_LIMIT)
+    assert controller.integral == [0.05, -0.05]
+    controller.reset()
+    assert controller.integral == [0.0, 0.0]
+
+
+@pytest.fixture
+def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[NavBridge, Mock]]:
+    uart = Mock()
+    uart.in_waiting = 0
+    uart.read.return_value = TELEMETRY
+    monkeypatch.setattr("tvpet_pi.hardware.serial.Serial", Mock(return_value=uart))
+    original = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda self, *a, **k: (
+            "boot" if str(self) == "/proc/sys/kernel/random/boot_id" else original(self, *a, **k)
+        ),
+    )
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "port": "test-uart",
+                "boot_id": "boot",
+                "expires_at": time.time() + 600,
+                "wheels_verified": True,
+                "gimbal_verified": True,
+                "unit_profile": "t1_scalar_limited",
+                "max_command": 0.1,
+                "firmware_timeout_ms": 300,
+                "measured_stop_seconds": 0.4,
+            }
+        )
+    )
+    os.chmod(evidence, 0o600)
+    board = Board("test-uart", Guard(), evidence)
+    board.open()
+    time.sleep(0.05)
+    nav_root = tmp_path / "nav"
+    nav_root.mkdir()
+    try:
+        yield NavBridge(board, nav_root), uart
+    finally:
+        board.close()
+
+
+def wheel_writes(uart: Mock) -> list[dict[str, Any]]:
+    commands = [json.loads(call.args[0]) for call in uart.write.call_args_list]
+    return [c for c in commands if c.get("T") == 1]
+
+
+def test_status_is_read_only_and_requests_fast_telemetry(rig: tuple[NavBridge, Mock]) -> None:
+    nav, _ = rig
+    status = nav.dispatch({"op": "status"})
+    assert status["ok"] and status["telemetry"]["v"] == 12.1 and not status["nav_owned"]
+    assert nav.board.observe_until > time.monotonic()
+    assert not nav.board.guard.lease
+
+
+def test_motion_needs_arm_then_obeys_lease_and_watchdog(rig: tuple[NavBridge, Mock]) -> None:
+    nav, uart = rig
+    response = json.loads(nav.handle(b'{"op":"cmd","linear":0.05,"angular":0}\n'))
+    assert not response["ok"] and not nav.board.guard.lease
+
+    write_arm(nav.root)
+    nav.board.guard.heartbeat()
+    assert nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0}) == {"ok": True}
+    assert nav.owned and nav.board.guard.press_deadline == nav.session_deadline
+    left = wheel_writes(uart)[-1]["L"]
+    assert 0 < left <= PWM_LIMIT
+
+    nav.watchdog_tick()
+    assert nav.owned  # a fresh command is within the 250 ms window
+    nav.last_command_at -= 1
+    uart.write.reset_mock()
+    nav.watchdog_tick()
+    assert not nav.owned and not nav.board.guard.lease
+    assert wheel_writes(uart)[-1] == {"T": 1, "L": 0.0, "R": 0.0}
+
+
+def test_manual_owner_estop_and_revocation_need_a_new_arm(rig: tuple[NavBridge, Mock]) -> None:
+    nav, _ = rig
+    write_arm(nav.root)
+    guard = nav.board.guard
+    guard.heartbeat()
+    manual = nav.board.acquire()
+    with pytest.raises(ValueError):
+        nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0})
+    assert guard.lease == manual
+    nav.board.stop()
+
+    nav.lease = ""
+    assert nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0})["ok"]
+    nav.board.stop()  # e.g. the web page stop button
+    with pytest.raises(ValueError, match="re-arm"):
+        nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0})
+    write_arm(nav.root, id="session-2")
+    assert nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0.1})["ok"]
+
+    assert nav.dispatch({"op": "cmd", "linear": 0, "angular": 0}) == {"ok": True, "stopped": True}
+    assert not guard.lease
+    nav.board.stop(emergency=True)
+    with pytest.raises(ValueError, match="estop"):
+        nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0})
+
+
+def test_calibration_arm_allows_only_short_straight_runs(rig: tuple[NavBridge, Mock]) -> None:
+    nav, _ = rig
+    write_arm(nav.root, calibrated=False, mode="calibration", expires_at=time.time() + 4)
+    nav.board.guard.heartbeat()
+    for request in (
+        {"op": "cmd", "linear": 0.05, "angular": 0},
+        {"op": "cmd", "linear": 0.07, "angular": 0, "source": "calibration"},
+        {"op": "cmd", "linear": 0.05, "angular": 0.1, "source": "calibration"},
+    ):
+        with pytest.raises(ValueError, match="calibration"):
+            nav.dispatch(request)
+    request = {"op": "cmd", "linear": 0.05, "angular": 0, "source": "calibration"}
+    assert nav.dispatch(request)["ok"]
+
+
+def test_stale_telemetry_rejects_motion(rig: tuple[NavBridge, Mock]) -> None:
+    nav, uart = rig
+    write_arm(nav.root)
+    uart.read.return_value = b""
+    nav.board.received_at = time.monotonic() - 1
+    with pytest.raises(ValueError):
+        nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0})
+
+
+def test_socket_round_trip_and_permissions(rig: tuple[NavBridge, Mock]) -> None:
+    nav, _ = rig
+    # macOS limits UNIX socket paths to 104 bytes, so avoid the long pytest tmp_path.
+    with tempfile.TemporaryDirectory(dir="/tmp") as short:
+        nav.root = Path(short) / "nav"
+        nav.start()
+        path = nav.root / "board.sock"
+        deadline = time.monotonic() + 2
+        while not path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert path.stat().st_mode & 0o777 == 0o600
+        with socket.socket(socket.AF_UNIX) as client:
+            client.connect(str(path))
+            client.sendall(b'{"op":"status"}\n')
+            reply = json.loads(client.makefile().readline())
+        assert reply["ok"] and reply["telemetry"]["T"] == 1001
+        with socket.socket(socket.AF_UNIX) as client:
+            client.connect(str(path))
+            client.sendall(b"not json\n")
+            assert not json.loads(client.makefile().readline())["ok"]
+        nav.board.close()
+        for thread in nav.threads:
+            thread.join(timeout=2)
+        assert not path.exists()
+
+
+def test_board_health_allows_half_degree_servo_settling(rig: tuple[NavBridge, Mock]) -> None:
+    board = rig[0].board
+    board.telemetry = {"L": 0, "R": 0, "v": 12.0, "pan": 45.19, "tilt": -15.3}
+    board.received_at = time.monotonic()
+    assert board.health_error() == ""
+    board.telemetry["pan"] = 45.6
+    assert "云台" in board.health_error()

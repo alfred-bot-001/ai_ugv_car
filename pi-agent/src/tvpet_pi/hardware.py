@@ -56,6 +56,8 @@ class Board:
         self.pan = 0.0
         self.tilt = 0.0
         self.thread: threading.Thread | None = None
+        # The ROS bridge asks for 20 Hz telemetry while it is observing.
+        self.observe_until = 0.0
         self.evidence_path = evidence_path
         self.evidence: dict[str, Any] = {}
         self.gate_reason = "缺少有效的实机验收记录"
@@ -199,7 +201,10 @@ class Board:
                             self.stop(emergency=True)
                         elif self.health_error() or time.monotonic() - self.received_at > 0.6:
                             self.stop()
-                    interval = 0.1 if self.guard.lease else 1.0
+                    if time.monotonic() < self.observe_until:
+                        interval = 0.05
+                    else:
+                        interval = 0.1 if self.guard.lease else 1.0
                     if time.monotonic() - last_request >= interval:
                         # The verified car has the factory two-servo gimbal module.
                         self.write({"T": 4, "cmd": 2})
@@ -233,7 +238,9 @@ class Board:
             return "硬件反馈不完整或无效"
         if self.telemetry["v"] <= 0 or any(abs(self.telemetry[key]) > 0.2 for key in ("L", "R")):
             return "底盘速度或电压反馈异常"
-        if not -45 <= self.telemetry["pan"] <= 45 or not -15 <= self.telemetry["tilt"] <= 45:
+        # Allow 0.5 deg of measured servo settling; command limits stay at +-45 / -15..45.
+        pan, tilt = self.telemetry["pan"], self.telemetry["tilt"]
+        if not -45.5 <= pan <= 45.5 or not -15.5 <= tilt <= 45.5:
             return "云台反馈超出控制范围"
         return ""
 
