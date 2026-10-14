@@ -1,0 +1,21 @@
+name: ugv-nav
+services:
+  ugv-nav:
+    image: ai-ugv-car/ugv-nav:${UGV_NAV_VERSION:-0.1.0}
+    build: .
+    container_name: ugv-nav
+    network_mode: host
+    restart: "no"
+    # dialout (gid 20) for the LiDAR tty; never map /dev/ttyAMA0, the M2 or audio devices.
+    group_add: ["20"]
+    devices:
+      - /dev/ugv_lidar:/dev/ugv_lidar
+    read_only: true
+    tmpfs: [/tmp]
+    cpus: 2.0
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD", "bash", "-c", "source /opt/ugv_ws/install/setup.bash && timeout 8 ros2 topic hz /scan --window 10 2>/dev/null | grep -q 'average rate'"]
+      interval: 30s
+      timeout: 15s
+      retries: 3

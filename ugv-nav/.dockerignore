@@ -1,0 +1,5 @@
+tests/
+src/
+**/__pycache__/
+*.egg-info/
+build/

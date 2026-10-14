@@ -1,0 +1,4 @@
+# 老三 stable device names. Install to /etc/udev/rules.d/ and run
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=tty
+# D500 / LD19 LiDAR behind a CP2102 bridge on its own USB port.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="0001", SYMLINK+="ugv_lidar"

@@ -74,6 +74,7 @@
 | --- | --- | --- |
 | Raspberry Pi 上位机 | `/Users/agent001/workspace-agent/projects/irobot/ugv_rpi/` | `3ae9f203f61bfaaf123ee376f78247d007880b0c` |
 | ESP32 General Driver | `/Users/agent001/workspace-agent/projects/irobot/ugv_base_general/` | `d308df91b333a513f45a238bef9ba9a0a5edf64c` |
+| ESP32 ROS Driver（车上实际系列） | https://github.com/waveshareteam/ugv_base_ros | `2e7df97`；2026-10-14 实测车上为该系列较旧版本，见 [ROS 导航设计 §2.2](ros-navigation-design.md) |
 | M2 SDK 与说明材料 | `/Users/agent001/workspace-agent/docs/M2-Micphone/` | 本地资料；协议适配前进一步核对 |
 
 参考入口：`ugv_rpi/base_ctrl.py`；`General_Driver/json_cmd.h`、`uart_ctrl.h`、`gimbal_module.h`、`movtion_module.h`、`ugv_config.h`、`ugv_advance.h`。厂家仓库：[ugv_rpi](https://github.com/waveshareteam/ugv_rpi)、[ugv_base_general](https://github.com/waveshareteam/ugv_base_general)。厂商源码作为协议参考，不直接导入其带设备扫描、全局初始化和无限命令队列的控制器。产品适配代码写在本仓库 `pi-agent/`。

@@ -4,6 +4,6 @@ repos:
     hooks:
       - id: ruff-check
         args: [--fix]
-        files: ^(robot-console|pi-agent)/.*\.py$
+        files: ^(robot-console|pi-agent|ugv-nav)/.*\.py$
       - id: ruff-format
-        files: ^(robot-console|pi-agent)/.*\.py$
+        files: ^(robot-console|pi-agent|ugv-nav)/.*\.py$

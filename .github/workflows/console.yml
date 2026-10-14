@@ -1,4 +1,4 @@
-name: Robot console
+name: AI UGV car
 on: [push, pull_request]
 jobs:
   verify:
@@ -10,5 +10,5 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
-      - run: uv run pytest --cov=tvpet_console --cov=tvpet_pi --cov-report=term-missing --cov-fail-under=80
+      - run: uv run pytest --cov=tvpet_console --cov=tvpet_pi --cov=ugv_nav_tools --cov-report=term-missing --cov-fail-under=80
       - run: uv build --all-packages

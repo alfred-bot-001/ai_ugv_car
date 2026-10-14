@@ -6,6 +6,7 @@ requires-python = "==3.11.*"
 members = [
     "ai-tv-pet-console",
     "ai-tv-pet-pi-agent",
+    "ai-ugv-car-nav-tools",
     "ai-ugv-car-workspace",
 ]
 
@@ -65,12 +66,18 @@ requires-dist = [
 ]
 
 [[package]]
+name = "ai-ugv-car-nav-tools"
+version = "0.1.0"
+source = { editable = "ugv-nav" }
+
+[[package]]
 name = "ai-ugv-car-workspace"
 version = "0.2.0"
 source = { virtual = "." }
 dependencies = [
     { name = "ai-tv-pet-console" },
     { name = "ai-tv-pet-pi-agent" },
+    { name = "ai-ugv-car-nav-tools" },
 ]
 
 [package.dev-dependencies]
@@ -88,6 +95,7 @@ dev = [
 requires-dist = [
     { name = "ai-tv-pet-console", editable = "robot-console" },
     { name = "ai-tv-pet-pi-agent", editable = "pi-agent" },
+    { name = "ai-ugv-car-nav-tools", editable = "ugv-nav" },
 ]
 
 [package.metadata.requires-dev]
