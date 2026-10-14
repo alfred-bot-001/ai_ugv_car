@@ -1,4 +1,5 @@
-# ugv-nav image: LiDAR, Rover URDF, laser odometry/EKF and the pi-agent bridge. No UART.
+# ugv-nav image: LiDAR, Rover URDF, laser odometry/EKF, SLAM, Nav2 and the pi-agent bridge.
+# No UART, no motion authority: pi-agent and its arm file decide.
 FROM ros:humble-ros-base-jammy
 
 ARG UGV_WS_COMMIT=9d2e8947d77432b80f73ae758dca594aada08307
@@ -6,6 +7,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git python3-pip ros-humble-robot-state-publisher ros-humble-joint-state-publisher ros-humble-xacro ros-humble-robot-localization \
+      ros-humble-slam-toolbox ros-humble-navigation2 ros-humble-nav2-bringup \
     && rm -rf /var/lib/apt/lists/*
 
 # Only the vendor packages we use, from the pinned ugv_ws commit.
@@ -49,4 +51,4 @@ LABEL org.opencontainers.image.title="ugv-nav" \
 
 USER 1000:1000
 WORKDIR /tmp
-CMD ["bash", "-c", "source /opt/ugv_ws/install/setup.bash && exec ros2 launch /app/launch/${UGV_NAV_LAUNCH:-n1_odometry}.launch.py"]
+CMD ["bash", "-c", "source /opt/ugv_ws/install/setup.bash && exec ros2 launch /app/launch/${UGV_NAV_LAUNCH:-n1_odometry}.launch.py ${UGV_NAV_ARGS:-}"]

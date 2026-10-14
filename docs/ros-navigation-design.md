@@ -203,6 +203,13 @@ Pi ↔ 容器的 UNIX 套接字消息：`telemetry`、`cmd_vel`、`heartbeat{sca
 - 静止实测：`/scan` 10.0 Hz、`/odom_rf2o` 10.0 Hz、`/odom` 20.0 Hz、`/odom_wheel` 和 `/ugv/voltage` 约 17 Hz。健康检查 healthy，容器 CPU 约 12%。静止 30 s 漂移：EKF 位置 0.39 cm、yaw +0.77°（约 1.5°/min）；轮式里程为 0。
 - 尚未进行：任何运动。下一步是标定（`T1`+PI 实际速度、`odl/odr` 距离、转向），需要用户在场、清场，先架空，地面部分须先完成 C3 地面制动验收。
 
+### 7.3 N2/N3 准备（2026-10-14，未运动）
+
+- ugv-nav 0.3.0：镜像新增 SLAM Toolbox 和 Nav2（Humble apt 包）。[`config/`](../ugv-nav/config/) 收入 10-13 验收过的 `slam.yaml`、`nav.yaml`（RotationShim + DWB，0.06 m/s、0.25 rad/s，不倒车，`allow_unknown=false`）以及行为树；只改了路径，并去掉了未使用的 keepout/speed 过滤服务。launch 为 [`n3_navigation`](../ugv-nav/launch/n3_navigation.launch.py)，任一组件退出则整栈关闭。
+- `ugv-ros-op`（容器内）：`pose`、`set-pose`、`cancel`、`navigate`。`navigate` 先规划，规划失败就不会发导航目标；结束后总是向 Pi 代理发 stop。
+- `ugv-navctl`（Pi 主机 venv，`/home/ws/deploy/ugv-nav/.venv`）：唯一写 `arm.json` 的组件。每个目标只开一个 ≤120 s 的授权窗口，`finally` 中一定撤销授权并停车；巡航按航点逐段授权，任一段失败即停止，报告写入 `reports/patrol-*.json`。路线文件在授权前校验（≤20 点、≤10 圈、坐标有限）。共 20 项新测试。
+- 实机（未运动）：`ugv-navctl mapping` 后 SLAM 注册雷达，Nav2 显示 `Managed nodes are active`，健康检查 healthy。`/map` 1 Hz（55×69 格，5 cm）；`where` 返回 (−0.02, 0.00, −0.03)；前方 0.25 m 规划成功（状态 4，10 个路径点），只规划不运动。容器 CPU 约 49%（4 核合计），负载 1.5。`arm.json` 始终为 `enabled:false`。
+
 **前置条件**：TODO 中“C3 扩展验收：地面低速/机械制动距离”必须在 N1 地面部分之前完成。目前只有车轮架空的停止测量。
 
 ## 8. 资源与风险

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-ugv-car-nav-tools"
-version = "0.2.0"
+version = "0.3.0"
 description = "ROS2 navigation helpers for the 老三 UGV Rover; runs inside the ugv-nav container"
 # The ROS2 Humble container ships Python 3.10; rclpy comes from ROS, not PyPI.
 requires-python = ">=3.10"
@@ -13,6 +13,8 @@ dependencies = []
 [project.scripts]
 ugv-scan-report = "ugv_nav_tools.scan_report:main"
 ugv-board-bridge = "ugv_nav_tools.bridge_node:main"
+ugv-ros-op = "ugv_nav_tools.ros_ops:main"
+ugv-navctl = "ugv_nav_tools.navctl:entry"
 
 [tool.setuptools.packages.find]
 where = ["src"]

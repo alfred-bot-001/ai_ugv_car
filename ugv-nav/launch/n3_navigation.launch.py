@@ -1,0 +1,66 @@
+"""N2/N3: N1 odometry plus SLAM Toolbox mapping or AMCL localization, and Nav2.
+
+mapping:=true      online SLAM builds /map (drive manually, then save with ugv-navctl)
+localization:=true map_server + AMCL on a saved map
+navigation:=true   Nav2 planner/controller; /cmd_vel still passes the bridge gate and
+                   pi-agent, and moves only while ugv-navctl holds a bounded arm window.
+"""
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    IncludeLaunchDescription,
+    RegisterEventHandler,
+)
+from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
+
+CONFIG = "/app/config"
+
+
+def generate_launch_description() -> LaunchDescription:
+    nav2 = get_package_share_directory("nav2_bringup") + "/launch"
+    slam = get_package_share_directory("slam_toolbox") + "/launch/online_async_launch.py"
+    common = {"use_sim_time": "false", "autostart": "true", "use_composition": "False"}
+    return LaunchDescription(
+        [
+            # Any component exiting tears the stack down; a half-running Nav2 is worse.
+            RegisterEventHandler(
+                OnProcessExit(on_exit=[EmitEvent(event=Shutdown(reason="component exited"))])
+            ),
+            DeclareLaunchArgument("mapping", default_value="true"),
+            DeclareLaunchArgument("localization", default_value="false"),
+            DeclareLaunchArgument("navigation", default_value="true"),
+            DeclareLaunchArgument("map", default_value="/maps/map.yaml"),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource("/app/launch/n1_odometry.launch.py")
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(slam),
+                launch_arguments={
+                    "slam_params_file": f"{CONFIG}/slam.yaml",
+                    "use_sim_time": "false",
+                }.items(),
+                condition=IfCondition(LaunchConfiguration("mapping")),
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(f"{nav2}/localization_launch.py"),
+                launch_arguments={
+                    "map": LaunchConfiguration("map"),
+                    "params_file": f"{CONFIG}/nav.yaml",
+                    **common,
+                }.items(),
+                condition=IfCondition(LaunchConfiguration("localization")),
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(f"{nav2}/navigation_launch.py"),
+                launch_arguments={"params_file": f"{CONFIG}/nav.yaml", **common}.items(),
+                condition=IfCondition(LaunchConfiguration("navigation")),
+            ),
+        ]
+    )
