@@ -24,4 +24,4 @@ uv run pytest
 
 Python 3.11、uv workspace、src 布局，Mypy strict，CI 要求覆盖率 ≥ 80%。开发前先读 [架构文档](docs/ARCHITECTURE.md)；部署、首次密码设置与实机证据见 [部署与验证](docs/control-console-deployment.md)，能力契约见 [主控台技术设计](docs/control-console-design.md)，进度见 [TODO](TODO.md)。
 
-专题设计：[人脸视频](docs/face-video-design.md) · [姿态审核采样](docs/pose-review-design.md) · [人物照片标注](docs/photo-annotation-design.md) · [旧机器人服务停用记录](docs/robot-services-retirement.md) · [ROS2 建图与自主导航（设计稿）](docs/ros-navigation-design.md)。
+专题设计：[人脸视频](docs/face-video-design.md) · [姿态审核采样](docs/pose-review-design.md) · [人物照片标注](docs/photo-annotation-design.md) · [旧机器人服务停用记录](docs/robot-services-retirement.md) · [ROS2 建图与自主导航（设计稿）](docs/ros-navigation-design.md) · [任务与巡航自主（S0/S1 设计稿）](docs/task-autonomy-design.md)。

@@ -22,7 +22,7 @@
 
 Pi 姿态规则为 geometry-v2：一帧内先完成全局一对一轨迹关联，清理歧义旧轨迹，避免多人靠近时不断重建时序历史。站、坐、躺与挥手等动作独立分类；有效人体关键点不足时保持无法判断。更新必须同时安装代理环境和独立 pose-venv 的项目 wheel。历史采样保留当时模型/规则结果，准确度仍由家庭实拍人工标注评估。
 
-建图与自主导航见 [ROS2 建图与自主导航设计](ros-navigation-design.md)（设计稿）：车上已有 2D 激光雷达，ROS 栈运行在 Pi 独立容器，运动仍只经 `pi-agent`。
+建图与自主导航见 [ROS2 建图与自主导航设计](ros-navigation-design.md)（设计稿）：车上已有 2D 激光雷达，ROS 栈运行在 Pi 独立容器，运动仍只经 `pi-agent`。按名字执行任务和巡航的分层设计见 [任务与巡航自主设计](task-autonomy-design.md)：大模型只下达地点/路线级任务，不输出速度或坐标。
 
 电视协议以 [protocol-m1.md](https://github.com/alfred-bot-001/ai-tv-pet/blob/main/docs/protocol-m1.md) 为准，真实进展以 [TODO](../TODO.md) 和 [M1 验证](https://github.com/alfred-bot-001/ai-tv-pet/blob/main/docs/m1-verification.md) 为准。
 
