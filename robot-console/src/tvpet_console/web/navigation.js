@@ -5,7 +5,7 @@ const $=selector=>document.querySelector(selector);
 const ROBOT_RADIUS=0.17,POSE_STALE_S=3,TRAIL_MAX=300,LOG_MAX=400;
 const MAP_COLORS=[[251,252,250,255],[38,58,50,255],[0,0,0,0]];
 let csrf='',stopped=false,toastTimer=null,navSocket=null,navRetry=null,mapGeneration=0;
-let videoSocket=null,videoGeneration=0,videoPending=null,videoPainting=false,videoStale=null;
+let videoSocket=null,videoGeneration=0,videoPending=null,videoPainting=false,videoStale=null,videoSource='front';
 let clockOffset=null,lastStatus={};
 const nav={map:null,mapImage:null,pose:null,trail:[],scan:[],plan:[],state:null,agent:null};
 let view={cx:0,cy:0,scale:60,width:0,height:0},follow=true,fitPending=true,dirty=true,dpr=1;
@@ -144,6 +144,8 @@ async function poll(){
   setText('#status-battery',Number.isFinite(t.v)&&t.v>0?t.v.toFixed(2)+' V':'—',Number.isFinite(t.v)&&t.v>0&&t.v<10?'fault':'');
   setText('#status-wheels',Number.isFinite(t.L)&&Number.isFinite(t.R)?t.L.toFixed(3)+' / '+t.R.toFixed(3)+' m/s':'—');
   setText('#status-estop',online?(board.estopped?'已锁定急停':'未锁定'):'—',board.estopped?'fault':'');
+  const front=lastStatus.state?.front_camera;
+  setText('#status-front',!online||!front?'—':{disabled:'未配置',fault:'故障：'+(front.error||'无法读取'),active:'采集中',available:'已连接',unknown:'未找到设备'}[front.state]||'未知',front?.state==='fault'||front?.state==='unknown'?'fault':'');
   if(!online&&videoSocket)stopVideo();
   if(online&&!navSocket)connectNav();
   setTimeout(poll,1000);
@@ -165,7 +167,7 @@ $('#log-level').onchange=()=>{const warn=$('#log-level').value==='warn';for(cons
 $('#log-clear').onclick=()=>{$('#log-list').replaceChildren();logKeys.clear();$('#log-empty').hidden=false;};
 
 // ---- camera
-function videoState(active){$('#video-toggle').textContent=active?'停止视频':'开启视频';$('#video-state').textContent=active?'实时画面':'未预览';$('#video-state').className='badge '+(active?'':'neutral');$('#video-label').textContent=active?'LIVE · 老三视角':'预览已关闭';$('#video-placeholder').hidden=active;$('#video-frame').hidden=!active;}
+function videoState(active){$('#video-toggle').textContent=active?'停止视频':'开启视频';$('#video-state').textContent=active?'实时画面':'未预览';$('#video-state').className='badge '+(active?'':'neutral');$('#video-label').textContent=active?'LIVE · '+(videoSource==='front'?'前置相机':'云台相机'):'预览已关闭';$('#video-placeholder').hidden=active;$('#video-frame').hidden=!active;}
 function stopVideo(){videoGeneration++;if(videoSocket){const old=videoSocket;videoSocket=null;old.close();}videoPending=null;clearTimeout(videoStale);videoState(false);}
 async function paintVideo(){
   if(videoPainting)return;videoPainting=true;
@@ -177,12 +179,22 @@ async function paintVideo(){
     }catch(error){if(generation===videoGeneration){toast('视频帧无效');stopVideo();}}finally{bitmap?.close();}}}
   finally{videoPainting=false;}
 }
+function startVideo(){
+  videoGeneration++;const generation=videoGeneration,ws=socket(videoSource);videoSocket=ws;$('#video-placeholder strong').textContent='正在连接摄像头…';
+  ws.onmessage=e=>{if(videoSocket!==ws)return;videoPending={data:e.data,generation};paintVideo();};
+  ws.onclose=()=>{if(videoSocket===ws)stopVideo();};
+}
 $('#video-toggle').onclick=()=>{
   if(videoSocket){stopVideo();return;}
   if(!lastStatus.online){toast('老三离线，无法开启视频');return;}
-  videoGeneration++;const generation=videoGeneration,ws=socket('video');videoSocket=ws;$('#video-placeholder strong').textContent='正在连接摄像头…';
-  ws.onmessage=e=>{if(videoSocket!==ws)return;videoPending={data:e.data,generation};paintVideo();};
-  ws.onclose=()=>{if(videoSocket===ws)stopVideo();};
+  if(videoSource==='front'&&lastStatus.state?.front_camera?.state==='disabled'){toast('前置相机还没有配置');return;}
+  startVideo();
+};
+for(const button of document.querySelectorAll('[data-source]'))button.onclick=()=>{
+  if(button.dataset.source===videoSource)return;videoSource=button.dataset.source;
+  for(const other of document.querySelectorAll('[data-source]'))other.setAttribute('aria-pressed',String(other===button));
+  $('#camera-caption').textContent=videoSource==='front'?'前置 Orbbec 彩色相机':'云台 USB 摄像头';
+  if(videoSocket){stopVideo();startVideo();}
 };
 
 // ---- page lifecycle

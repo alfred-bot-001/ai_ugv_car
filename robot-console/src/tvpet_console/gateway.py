@@ -38,8 +38,12 @@ class Gateway:
         self.video_metadata: dict[str, Any] = {}
         self.audio = b""
         self.audio_version = 0
+        # Forward Orbbec color camera: frames only (no face or pose processing).
+        self.front_event = asyncio.Condition()
+        self.front = b""
+        self.front_version = 0
         self.snapshots: dict[str, asyncio.Future[bytes]] = {}
-        self.viewer_counts = {"video": 0, "audio": 0, "nav": 0}
+        self.viewer_counts = {"video": 0, "audio": 0, "nav": 0, "front": 0}
         # Map page feed: memory only (the map is the home's floor plan), cleared offline.
         self.nav = NavCache()
         self.nav_event = asyncio.Condition()
@@ -111,6 +115,7 @@ class Gateway:
             self.challenge_lease = ""
             self.video = b""
             self.audio = b""
+            self.front = b""
             self.nav.clear()
             self.faces.reset()
             for pending_result in self.pending.values():
@@ -132,6 +137,7 @@ class Gateway:
                     "video": (self.viewer_counts["video"] > 0 or self.background_video),
                     "audio": self.viewer_counts["audio"] > 0,
                     "nav": self.viewer_counts["nav"] > 0,
+                    "front": self.viewer_counts["front"] > 0,
                 }
             )
             await asyncio.sleep(0.2)
@@ -162,6 +168,12 @@ class Gateway:
                     jpeg = packet[4 + size :]
                     if not jpeg.startswith(b"\xff\xd8") or len(jpeg) > MAX_JPEG:
                         raise ValueError("invalid JPEG")
+                    if channel == "front":
+                        async with self.front_event:
+                            self.front = jpeg
+                            self.front_version += 1
+                            self.front_event.notify_all()
+                        continue
                     self.video_metadata = meta
                     snapshot_id = str(meta.get("snapshot_id", ""))
                     future = self.snapshots.get(snapshot_id)
@@ -223,6 +235,8 @@ class Gateway:
         if delta > 0 and next_count == 1:
             if channel == "video":
                 self.video = b""
+            elif channel == "front":
+                self.front = b""
             else:
                 self.audio = b""
 
@@ -269,7 +283,7 @@ class Gateway:
         if self.online:
             with contextlib.suppress(ValueError, TimeoutError):
                 await self.rpc("stop")
-            for channel in ("video", "audio"):
+            for channel in ("video", "audio", "front"):
                 with contextlib.suppress(ValueError, TimeoutError):
                     await self.rpc(
                         "media.set",
@@ -280,6 +294,7 @@ class Gateway:
                     )
         self.video = b""
         self.audio = b""
+        self.front = b""
         self.faces.reset(self.background_video)
 
     async def background_capture(self) -> None:

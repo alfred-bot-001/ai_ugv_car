@@ -12,7 +12,7 @@ members = [
 
 [[package]]
 name = "ai-tv-pet-console"
-version = "0.7.0"
+version = "0.8.0"
 source = { editable = "robot-console" }
 dependencies = [
     { name = "ai-tv-pet-pi-agent" },
@@ -48,7 +48,7 @@ provides-extras = ["speech"]
 
 [[package]]
 name = "ai-tv-pet-pi-agent"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "pi-agent" }
 dependencies = [
     { name = "httpx" },

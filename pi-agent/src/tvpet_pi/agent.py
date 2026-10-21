@@ -63,6 +63,10 @@ class AgentRuntime:
         m2_path = str(config.get("m2", "/dev/m2_mic"))
         self.m2 = M2Link(m2_path) if m2_path else None
         self.camera = CaptureWorker(Camera(str(config.get("camera", "/dev/video0"))))
+        # Forward-facing Orbbec color camera (plain UVC MJPEG); "" leaves it off.
+        self.front_path = str(config.get("front_camera", ""))
+        self.front_camera = CaptureWorker(Camera(self.front_path)) if self.front_path else None
+        self.front_enabled = False
         self.microphone_device = str(config.get("microphone", M2_MICROPHONE))
         self.microphone = CaptureWorker(Microphone(self.microphone_device))
         self.speaker_device = str(config.get("speaker", "plughw:CARD=Device,DEV=0"))
@@ -103,6 +107,19 @@ class AgentRuntime:
                 else "unknown",
                 "error": self.camera.error,
                 "format": "MJPEG 640×480 / 10fps",
+            },
+            "front_camera": {
+                "state": "disabled"
+                if self.front_camera is None
+                else "fault"
+                if self.front_camera.error
+                else "active"
+                if self.front_camera.active
+                else "available"
+                if Path(self.front_path).exists()
+                else "unknown",
+                "error": self.front_camera.error if self.front_camera else "",
+                "format": "Orbbec 彩色 · MJPEG 640×480 / 10fps",
             },
             "microphone": {
                 "state": "fault"
@@ -208,11 +225,15 @@ class AgentRuntime:
                 self.board.move(Stick.model_validate(args))
             elif action == "media.set":
                 channel, enabled = args.get("channel"), args.get("enabled") is True
-                if channel not in ("video", "audio"):
+                if channel not in ("video", "audio", "front"):
                     raise ValueError("unknown media channel")
-                worker = self.camera if channel == "video" else self.microphone
+                if channel == "front" and self.front_camera is None:
+                    raise ValueError("front camera is not configured")
+                worker = self._worker(str(channel))
                 if channel == "video":
                     self.video_enabled = enabled
+                elif channel == "front":
+                    self.front_enabled = enabled
                 else:
                     self.audio_enabled = enabled
                 if enabled and not worker.active:
@@ -234,6 +255,13 @@ class AgentRuntime:
             result.update(ok=False, error=str(error))
         await self.send(result)
 
+    def _worker(self, channel: str) -> CaptureWorker:
+        worker = {"video": self.camera, "audio": self.microphone, "front": self.front_camera}
+        selected = worker.get(channel)
+        if selected is None:
+            raise ValueError("unknown media channel")
+        return selected
+
     async def _control_reader(self) -> None:
         assert self.control is not None
         async for raw in self.control:
@@ -244,6 +272,8 @@ class AgentRuntime:
                     self.camera.renew()
                 if message.get("audio") is True and self.audio_enabled:
                     self.microphone.renew()
+                if message.get("front") is True and self.front_enabled and self.front_camera:
+                    self.front_camera.renew()
                 if message.get("nav") is True:
                     self.nav_viewers_until = time.monotonic() + 1.5
             elif message.get("kind") == "command":
@@ -301,7 +331,7 @@ class AgentRuntime:
     async def _capture_sender(
         self, socket: WebSocketClientProtocol, channel: str, receiver: asyncio.Task[None] | None
     ) -> None:
-        worker = self.camera if channel == "video" else self.microphone
+        worker = self._worker(channel)
         last = -1
         while True:
             if receiver and receiver.done():
@@ -310,7 +340,17 @@ class AgentRuntime:
             version, value = worker.latest()
             if value is not None and version != last:
                 last = version
-                if isinstance(value, Frame):
+                if isinstance(value, Frame) and channel == "front":
+                    started = time.monotonic()
+                    metadata = json.dumps(
+                        {"sequence": value.sequence, "timestamp_ns": value.timestamp_ns}
+                    ).encode()
+                    await asyncio.wait_for(
+                        socket.send(struct.pack("!I", len(metadata)) + metadata + value.jpeg),
+                        timeout=0.3,
+                    )
+                    await asyncio.sleep(max(0, 0.2 - (time.monotonic() - started)))
+                elif isinstance(value, Frame):
                     started = time.monotonic()
                     pose = await self.pose.infer(value.jpeg)
                     if time.monotonic_ns() - value.timestamp_ns > 1_500_000_000:
@@ -346,6 +386,8 @@ class AgentRuntime:
             if channel == "video" and not self.video_enabled and not self.snapshot_id:
                 if worker.active and time.monotonic() >= self.snapshot_until:
                     await asyncio.to_thread(worker.stop)
+            if channel == "front" and not self.front_enabled and worker.active:
+                await asyncio.to_thread(worker.stop)
             await asyncio.sleep(0.005)
 
     def nav_agent_packet(self) -> bytes:
@@ -360,6 +402,15 @@ class AgentRuntime:
                 "relay": bool(self.nav_stream and self.nav_stream.connected),
             },
         )
+
+    async def _front_channel(self, link: str, tls: ssl.SSLContext, token: str) -> None:
+        """The front camera is optional too: a refused or broken channel only retries."""
+        while True:
+            try:
+                await self._media_sender("front", link, tls, token)
+            except (OSError, ValueError, TimeoutError, KeyError, WebSocketException) as error:
+                LOGGER.info("Front camera channel unavailable: %s", type(error).__name__)
+            await asyncio.sleep(5)
 
     async def _nav_channel(self, link: str, tls: ssl.SSLContext, token: str) -> None:
         """The map page feed is optional: its failures never end the control link."""
@@ -445,6 +496,8 @@ class AgentRuntime:
                         ]
                         if self.nav_stream:
                             tasks.append(asyncio.create_task(self._nav_channel(link, tls, token)))
+                        if self.front_camera:
+                            tasks.append(asyncio.create_task(self._front_channel(link, tls, token)))
                         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                         for task in done:
                             task.result()
@@ -462,7 +515,9 @@ class AgentRuntime:
                     self.stop_playback()
                     await asyncio.to_thread(self.camera.stop)
                     await asyncio.to_thread(self.microphone.stop)
-                    self.video_enabled = self.audio_enabled = False
+                    if self.front_camera:
+                        await asyncio.to_thread(self.front_camera.stop)
+                    self.video_enabled = self.audio_enabled = self.front_enabled = False
                     self.snapshot_id = ""
                 await asyncio.sleep(2)
         finally:

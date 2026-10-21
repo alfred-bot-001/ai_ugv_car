@@ -652,7 +652,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.websocket("/ws/{channel}")
     async def media_socket(websocket: WebSocket, channel: str) -> None:
-        if channel not in ("video", "audio"):
+        if channel not in ("video", "audio", "front"):
             await websocket.close(code=1008)
             return
         auth = await browser_auth(websocket, video=channel == "video")
@@ -673,6 +673,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if annotated
                 else gateway.video_event
                 if channel == "video"
+                else gateway.front_event
+                if channel == "front"
                 else gateway.audio_event
             )
             last = -1
@@ -687,6 +689,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         if annotated
                         else gateway.video_version
                         if channel == "video"
+                        else gateway.front_version
+                        if channel == "front"
                         else gateway.audio_version
                     )
                     data = (
@@ -694,6 +698,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         if annotated
                         else gateway.video
                         if channel == "video"
+                        else gateway.front
+                        if channel == "front"
                         else gateway.audio
                     )
                     if version == last or not data:
@@ -719,7 +725,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def agent_socket(websocket: WebSocket, agent_id: str, channel: str) -> None:
         token = websocket.headers.get("authorization", "").removeprefix("Bearer ")
         allowed = (
-            channel in ("control", "video", "audio", "nav")
+            channel in ("control", "video", "audio", "nav", "front")
             and agent_id == settings.agent_id
             and store.agent_valid(agent_id, token)
             and AGENT_PROTOCOL in websocket.headers.get("sec-websocket-protocol", "")
