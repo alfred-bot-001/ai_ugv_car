@@ -4,7 +4,15 @@ import math
 
 import pytest
 
-from ugv_nav_tools.stall import STALL_BODY_SECONDS, BodyStallWatch, Pose2D, Sample, stalled, wrap
+from ugv_nav_tools.stall import (
+    STALL_BODY_SECONDS,
+    BodyStallWatch,
+    Pose2D,
+    Sample,
+    motion,
+    stalled,
+    wrap,
+)
 
 
 def samples(wheel_step: float, laser_step: float, n: int = 11, turn: float = 0.0) -> list[Sample]:
@@ -26,10 +34,17 @@ def test_normal_driving_short_windows_and_crawling_are_not_stalls() -> None:
     assert not stalled([])
 
 
-def test_spinning_wheels_need_the_body_to_turn() -> None:
-    spinning = samples(0.0, 0.0, turn=0.06)  # 0.6 rad of wheel yaw
-    assert stalled(spinning)
-    turning = [Sample(s.t, s.wheel, Pose2D(0.0, 0.0, 0.06 * i)) for i, s in enumerate(spinning)]
+def test_wheel_yaw_alone_is_not_a_stall() -> None:
+    # Skid-steer turns start with the wheels scrubbing; the car recorded 0.535 rad of
+    # wheel yaw while the body turned 0.012 rad at the start of a normal goal.
+    scrubbing = samples(0.0, 0.0, turn=0.06)  # 0.6 rad of wheel yaw
+    assert not stalled(scrubbing)
+    report = motion(scrubbing)
+    assert report["wheel_turn_rad"] > 0.5 and report["body_turned_rad"] == 0.0
+    # Driving into something while also turning a little is still a stall.
+    pushing = samples(0.012, 0.0, turn=0.06)
+    assert stalled(pushing)
+    turning = [Sample(s.t, s.wheel, Pose2D(0.0, 0.0, 0.06 * i)) for i, s in enumerate(pushing)]
     assert not stalled(turning)
 
 

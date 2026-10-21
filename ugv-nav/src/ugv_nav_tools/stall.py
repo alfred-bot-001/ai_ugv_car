@@ -14,7 +14,9 @@ from dataclasses import dataclass
 # Initial values, to be calibrated on the car (docs/task-autonomy-design.md §3.1, S0-2).
 STALL_BODY_SECONDS = 2.0
 WHEEL_TRAVEL_M = 0.10
-WHEEL_TURN_RAD = 0.5
+# Wheel yaw is not used: on this six-wheel skid chassis an in-place turn starts with
+# the wheels scrubbing (2026-10-21: 0.535 rad of wheel yaw while the body turned 0.012
+# rad), and the EKF ignores wheel yaw for the same reason. Turning is still logged.
 BODY_MOVE_M = 0.03
 BODY_TURN_RAD = 0.08
 
@@ -60,9 +62,10 @@ def stalled(window: Sequence[Sample], seconds: float = STALL_BODY_SECONDS) -> bo
     if len(window) < 2 or window[-1].t - window[0].t < seconds:
         return False
     m = motion(window)
-    wheels_moving = m["wheel_travel_m"] >= WHEEL_TRAVEL_M or m["wheel_turn_rad"] >= WHEEL_TURN_RAD
     return (
-        wheels_moving and m["body_moved_m"] < BODY_MOVE_M and m["body_turned_rad"] < BODY_TURN_RAD
+        m["wheel_travel_m"] >= WHEEL_TRAVEL_M
+        and m["body_moved_m"] < BODY_MOVE_M
+        and m["body_turned_rad"] < BODY_TURN_RAD
     )
 
 
