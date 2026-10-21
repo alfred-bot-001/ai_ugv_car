@@ -4,11 +4,16 @@
 amcl:
   ros__parameters:
     use_sim_time: false
+    # 2026-10-21: omni motion model (alpha5 is its strafe noise). In an in-place turn RF2O
+    # reports 0.5-1.9 cm of backward travel per 0.05-0.09 rad step; the differential model
+    # reads that as a near-180 degree bearing and widened AMCL to 0.20 m / 0.25 rad per
+    # 0.7 rad turn, tripping ugv-loc-health with the scan still matching 87%. Omni stayed
+    # at 0.09 m / 0.11 rad over the same turns.
     alpha1: 0.2
     alpha2: 0.2
     alpha3: 0.2
     alpha4: 0.2
-    alpha5: 0.0
+    alpha5: 0.2
     base_frame_id: base_footprint
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -29,7 +34,7 @@ amcl:
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
     resample_interval: 1
-    robot_model_type: nav2_amcl::DifferentialMotionModel
+    robot_model_type: nav2_amcl::OmniMotionModel
     save_pose_rate: 0.5
     sigma_hit: 0.2
     tf_broadcast: true

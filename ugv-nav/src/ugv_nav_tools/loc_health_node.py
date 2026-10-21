@@ -46,6 +46,7 @@ class LocHealthNode(Node):  # type: ignore[misc]
         self.grid: Any = None
         self.scan: Any = None
         self.ratio: float | None = None
+        self.last_reason: str | None = None
         self.board_error = ""
         self.status = self.create_publisher(String, "localization/health", 5)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -106,6 +107,12 @@ class LocHealthNode(Node):  # type: ignore[misc]
         self.ratio = self.match()
         self.health.on_match(now, self.ratio)
         reason = self.health.reason
+        if reason != self.last_reason:
+            if reason:
+                self.get_logger().warn(f"unhealthy: {reason} (match {self.ratio})")
+            else:
+                self.get_logger().info(f"healthy again (match {self.ratio})")
+            self.last_reason = reason
         if reason:
             try:
                 if self.client.fault() is None:  # also re-halts a fresh arm session
