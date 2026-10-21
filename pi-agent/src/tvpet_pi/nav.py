@@ -32,17 +32,21 @@ CALIBRATION_ARM_MAX_SECONDS = 5.0
 COMMAND_TIMEOUT = 0.25
 TELEMETRY_MAX_AGE = 0.3
 OBSERVE_SECONDS = 2.0
-TRACK_WIDTH_M = 0.17452
-# Low-speed skid-steer compensation for static friction; PWM limits stay unchanged.
-TURN_GAIN = 2.0
-# T1 wheel-speed ceiling for navigation; stays below the Board runaway threshold.
+# 2026-10-21, user-approved (plan A, the factory way): T1 L/R are m/s targets for the
+# firmware's own speed PID, exactly as T13 is (both call setGoalSpeed). The bridge no
+# longer runs its own PI on top or doubles turns; wheel targets use the firmware's
+# T13 formula. Probes showed the firmware stalls and stutters below about 0.06 m/s
+# per wheel (0.064 m/s speed steps plus a 23/255 PWM dead zone), so each side is
+# either still or at least WHEEL_FLOOR.
+WHEEL_FLOOR = 0.07  # m/s
+# T1 wheel-speed ceiling for navigation (m/s); stays below the Board runaway threshold.
 PWM_LIMIT = 0.18
 MAX_REQUEST = 4096
 # S0 single-wheel stall (docs/task-autonomy-design.md §3.1 A). Initial values, to be
 # calibrated on the car so normal starts, spins and carpet edges never trip them.
-STALL_TARGET_MIN = 0.04  # m/s commanded on the wheel
+# Targets are 0 or >= WHEEL_FLOOR, where the firmware turns the wheel without pauses.
+STALL_TARGET_MIN = 0.06  # m/s commanded on the wheel
 STALL_MEASURED_MAX = 0.01  # m/s measured: the wheel is not turning
-STALL_WINDUP_FRACTION = 0.9  # the PI integral has used up its correction budget
 STALL_WHEEL_SECONDS = 1.5
 # Motion probe (2026-10-21): bounded factory-command steps to compare the firmware's own
 # T13 / T1 speed loop with this bridge's T1 + PI, with per-side encoder traces.
@@ -146,43 +150,44 @@ def read_arm(path: Path, now: float) -> Arm:
     return Arm(session_id, calibration, remaining, probe)
 
 
+def floor_wheels(left: float, right: float, floor: float = WHEEL_FLOOR) -> tuple[float, float]:
+    """Keep each side still or at least `floor` m/s, where the firmware PID runs smoothly.
+
+    Turning in place (opposite signs): both sides lifted to the floor. Same direction:
+    the curvature is kept while the outer side is lifted to the floor; an inner side
+    below half the floor stops (pivot), otherwise it is lifted to the floor.
+    """
+    if left == 0 and right == 0:
+        return 0.0, 0.0
+    if left * right < 0:
+        return (
+            math.copysign(max(abs(left), floor), left),
+            math.copysign(max(abs(right), floor), right),
+        )
+    outer = max(abs(left), abs(right))
+    if outer < floor:
+        left, right = left * floor / outer, right * floor / outer
+
+    def side(value: float) -> float:
+        if abs(value) < floor / 2:
+            return 0.0
+        return math.copysign(max(abs(value), floor), value)
+
+    return side(left), side(right)
+
+
 def wheel_targets(linear: float, angular: float) -> tuple[float, float]:
-    """Differential wheel speeds in m/s with the skid-steer turn compensation."""
-    half = angular * TRACK_WIDTH_M * TURN_GAIN / 2
-    return linear - half, linear + half
-
-
-class WheelPI:
-    """Close the velocity loop on encoder speed; firmware T1 is a PWM scalar on this Rover."""
-
-    def __init__(self, kp: float = 0.25, ki: float = 0.4, windup: float = 0.05) -> None:
-        self.kp, self.ki, self.windup = kp, ki, windup
-        self.integral = [0.0, 0.0]
-
-    def reset(self) -> None:
-        self.integral = [0.0, 0.0]
-
-    def step(
-        self, targets: tuple[float, float], measured: tuple[float, float], dt: float
-    ) -> tuple[float, float]:
-        output = []
-        for side in (0, 1):
-            error = targets[side] - measured[side]
-            self.integral[side] = max(
-                -self.windup, min(self.windup, self.integral[side] + error * dt)
-            )
-            u = targets[side] + self.kp * error + self.ki * self.integral[side]
-            # Never reverse a wheel just to correct a low-speed overshoot.
-            if targets[side] >= 0:
-                u = max(0.0, min(PWM_LIMIT, u))
-            else:
-                u = min(0.0, max(-PWM_LIMIT, u))
-            output.append(u)
-        return output[0], output[1]
+    """Wheel speeds in m/s by the firmware's T13 formula, floored and capped."""
+    half = angular * FIRMWARE_TRACK_WIDTH_M / 2
+    left, right = floor_wheels(linear - half, linear + half)
+    return (
+        max(-PWM_LIMIT, min(PWM_LIMIT, left)),
+        max(-PWM_LIMIT, min(PWM_LIMIT, right)),
+    )
 
 
 class StallMonitor:
-    """A wheel that is commanded, fully corrected by the PI and still not turning."""
+    """A wheel commanded at a speed the firmware turns smoothly that still does not turn."""
 
     def __init__(self, seconds: float = STALL_WHEEL_SECONDS) -> None:
         self.seconds = seconds
@@ -196,14 +201,11 @@ class StallMonitor:
         now: float,
         targets: tuple[float, float],
         measured: tuple[float, float],
-        controller: WheelPI,
     ) -> str | None:
         """Return "left" or "right" once that wheel has been stalled for `seconds`."""
         for side, name in ((0, "left"), (1, "right")):
             stalled = (
-                abs(targets[side]) >= STALL_TARGET_MIN
-                and abs(measured[side]) < STALL_MEASURED_MAX
-                and abs(controller.integral[side]) >= STALL_WINDUP_FRACTION * controller.windup
+                abs(targets[side]) >= STALL_TARGET_MIN and abs(measured[side]) < STALL_MEASURED_MAX
             )
             if not stalled:
                 self.since[side] = None
@@ -240,8 +242,6 @@ class NavBridge:
         self.arm_id = ""
         self.session_deadline = 0.0
         self.last_command_at = 0.0
-        self.last_control_at = 0.0
-        self.controller = WheelPI()
         self.stall_monitor = StallMonitor()
         # Set by a safety stop; cleared only by a new operator arm session.
         self.fault: dict[str, Any] | None = None
@@ -327,21 +327,16 @@ class NavBridge:
                     raise ValueError("control revoked; re-arm required")
                 self.lease = board.guard.acquire()  # rejects an existing manual lease
                 self.sequence = 0
-                self.controller.reset()
                 self.stall_monitor.reset()
-                self.last_control_at = now
                 # The bounded operator session replaces the 2 s joystick press budget.
                 # Fresh one-use challenges, heartbeat and the Board watchdog still apply.
                 board.guard.press_deadline = self.session_deadline
                 board.guard.lease_deadline = self.session_deadline
             self.sequence += 1
             board.guard.heartbeat()
-            dt = min(0.1, max(0.0, now - self.last_control_at))
-            self.last_control_at = now
             measured = (float(board.telemetry["L"]), float(board.telemetry["R"]))
-            targets = wheel_targets(request.linear, request.angular)
-            left, right = self.controller.step(targets, measured, dt)
-            stalled = self.stall_monitor.update(now, targets, measured, self.controller)
+            left, right = wheel_targets(request.linear, request.angular)
+            stalled = self.stall_monitor.update(now, (left, right), measured)
             if stalled:
                 self.halt(f"stall_wheel_{stalled}")
                 raise ValueError(f"stall: {stalled} wheel commanded but not turning")

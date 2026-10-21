@@ -16,9 +16,10 @@ from tvpet_pi.hardware import RUNAWAY_SPEED, Board
 from tvpet_pi.nav import (
     PWM_LIMIT,
     REQUEST,
+    WHEEL_FLOOR,
     NavBridge,
     StallMonitor,
-    WheelPI,
+    floor_wheels,
     read_arm,
     stick_from_wheels,
     wheel_targets,
@@ -84,24 +85,42 @@ def test_requests_are_bounded_and_strict() -> None:
 
 
 def test_wheel_mapping_round_trips_through_board_differential() -> None:
-    left, right = wheel_targets(0.05, 0.2)
-    assert right - left == pytest.approx(0.2 * 0.17452 * 2.0)
+    left, right = wheel_targets(0.1, 0.2)
+    assert right - left == pytest.approx(0.2 * 0.172)  # the firmware's T13 formula
+    assert (left + right) / 2 == pytest.approx(0.1)
     for wheels in ((0.18, 0.18), (0.18, 0.0), (0.0, -0.18), (0.03, 0.05), (0.18, -0.18)):
         x, y = stick_from_wheels(*wheels)
         assert max(abs(x), abs(y)) <= 1
         assert differential(x, y, PWM_LIMIT) == pytest.approx(wheels)
 
 
-def test_wheel_pi_clamps_and_never_reverses_a_forward_wheel() -> None:
-    controller = WheelPI()
-    assert controller.step((0.05, 0.05), (0.05, 0.05), 0.05) == pytest.approx((0.05, 0.05))
-    assert controller.step((0.02, -0.02), (0.2, -0.2), 0.1) == (0.0, 0.0)
-    for _ in range(200):
-        out = controller.step((PWM_LIMIT, -PWM_LIMIT), (0.0, 0.0), 0.1)
-    assert out == (PWM_LIMIT, -PWM_LIMIT)
-    assert controller.integral == [0.05, -0.05]
-    controller.reset()
-    assert controller.integral == [0.0, 0.0]
+@pytest.mark.parametrize(
+    "linear, angular, expected",
+    [
+        (0.0, 0.0, (0.0, 0.0)),
+        (0.10, 0.0, (0.10, 0.10)),
+        (0.0, 0.5, (-WHEEL_FLOOR, WHEEL_FLOOR)),  # +-0.043 lifted: no stop-and-go spin
+        (0.0, -0.2, (WHEEL_FLOOR, -WHEEL_FLOOR)),
+        (0.03, 0.0, (WHEEL_FLOOR, WHEEL_FLOOR)),  # a crawl is lifted to the floor
+        (0.06, 0.3, (0.0, 0.0858)),  # inner 0.034 m/s pivots instead of stuttering
+        (0.12, 0.6, (WHEEL_FLOOR, 0.1716)),  # inner 0.068 m/s lifted to the floor
+        (0.12, -0.6, (0.1716, WHEEL_FLOOR)),
+    ],
+)
+def test_wheel_targets_stay_out_of_the_firmware_stutter_band(
+    linear: float, angular: float, expected: tuple[float, float]
+) -> None:
+    left, right = wheel_targets(linear, angular)
+    assert (left, right) == pytest.approx(expected)
+    for side in (left, right):
+        assert side == 0 or WHEEL_FLOOR <= abs(side) <= PWM_LIMIT
+
+
+def test_floor_keeps_the_curvature_when_lifting_a_slow_arc() -> None:
+    left, right = floor_wheels(0.02, 0.04)
+    assert right == pytest.approx(WHEEL_FLOOR) and left == pytest.approx(WHEEL_FLOOR)
+    left, right = floor_wheels(0.01, 0.04)  # inner falls below half the floor once lifted
+    assert left == 0.0 and right == pytest.approx(WHEEL_FLOOR)
 
 
 @pytest.fixture
@@ -290,34 +309,26 @@ def test_board_health_allows_half_degree_servo_settling(rig: tuple[NavBridge, Mo
     assert "云台" in board.health_error()
 
 
-def test_stall_monitor_needs_a_saturated_command_held_for_the_window() -> None:
-    controller = WheelPI()
+def test_stall_monitor_needs_a_commanded_wheel_still_for_the_window() -> None:
     monitor = StallMonitor(seconds=1.5)
-    controller.integral = [0.05, 0.05]
-    assert monitor.update(0.0, (0.05, 0.10), (0.05, 0.0), controller) is None
-    assert monitor.update(1.4, (0.05, 0.10), (0.05, 0.0), controller) is None
-    assert monitor.update(1.5, (0.05, 0.10), (0.05, 0.0), controller) == "right"
+    assert monitor.update(0.0, (0.07, 0.10), (0.07, 0.0)) is None
+    assert monitor.update(1.4, (0.07, 0.10), (0.07, 0.0)) is None
+    assert monitor.update(1.5, (0.07, 0.10), (0.07, 0.0)) == "right"
 
-    # A wheel that starts turning restarts its window (normal start-up).
+    # One encoder step (the firmware reports 0.064 m/s steps) restarts the window.
     monitor.reset()
-    assert monitor.update(0.0, (0.1, 0.1), (0.0, 0.0), controller) is None
-    assert monitor.update(1.0, (0.1, 0.1), (0.02, 0.02), controller) is None
-    assert monitor.update(2.0, (0.1, 0.1), (0.0, 0.0), controller) is None
-    assert monitor.update(3.4, (0.1, 0.1), (0.0, 0.0), controller) is None
+    assert monitor.update(0.0, (0.1, 0.1), (0.0, 0.0)) is None
+    assert monitor.update(1.0, (0.1, 0.1), (0.064, 0.064)) is None
+    assert monitor.update(2.0, (0.1, 0.1), (0.0, 0.0)) is None
+    assert monitor.update(3.4, (0.1, 0.1), (0.0, 0.0)) is None
 
-    # Tiny targets and a PI that still has correction budget never trip.
+    # A still (zero) target never trips; a reversed wheel is judged by magnitude.
     monitor.reset()
     for now in (10.0, 15.0, 20.0):
-        assert monitor.update(now, (0.03, -0.03), (0.0, 0.0), controller) is None
-    controller.integral = [0.02, -0.02]
-    for now in (30.0, 35.0):
-        assert monitor.update(now, (0.1, -0.1), (0.0, 0.0), controller) is None
-
-    # A reversed wheel is judged by magnitude.
-    controller.integral = [-0.05, 0.05]
+        assert monitor.update(now, (0.0, 0.0), (0.0, 0.0)) is None
     monitor.reset()
-    assert monitor.update(40.0, (-0.08, 0.08), (0.0, 0.08), controller) is None
-    assert monitor.update(41.6, (-0.08, 0.08), (0.0, 0.08), controller) == "left"
+    assert monitor.update(40.0, (-0.08, 0.08), (0.0, 0.08)) is None
+    assert monitor.update(41.6, (-0.08, 0.08), (0.0, 0.08)) == "left"
 
 
 def test_wheel_stall_stops_and_needs_a_new_arm(rig: tuple[NavBridge, Mock]) -> None:
@@ -325,8 +336,7 @@ def test_wheel_stall_stops_and_needs_a_new_arm(rig: tuple[NavBridge, Mock]) -> N
     write_arm(nav.root)
     nav.board.guard.heartbeat()
     assert nav.dispatch({"op": "cmd", "linear": 0.1, "angular": 0})["ok"]
-    nav.stall_monitor.seconds = 0.0
-    nav.controller.integral = [0.05, 0.05]  # telemetry reports both wheels at 0 m/s
+    nav.stall_monitor.seconds = 0.0  # telemetry reports both wheels at 0 m/s
     response = json.loads(nav.handle(b'{"op":"cmd","linear":0.1,"angular":0}\n'))
     assert not response["ok"] and "stall" in response["error"]
     assert not nav.owned and wheel_writes(uart)[-1] == {"T": 1, "L": 0.0, "R": 0.0}
@@ -334,6 +344,7 @@ def test_wheel_stall_stops_and_needs_a_new_arm(rig: tuple[NavBridge, Mock]) -> N
     with pytest.raises(ValueError, match="re-arm"):
         nav.dispatch({"op": "cmd", "linear": 0.1, "angular": 0})
 
+    nav.stall_monitor.seconds = 1.5
     write_arm(nav.root, id="session-2")
     assert nav.dispatch({"op": "cmd", "linear": 0.1, "angular": 0})["ok"]
     assert nav.dispatch({"op": "status"})["fault"] is None
