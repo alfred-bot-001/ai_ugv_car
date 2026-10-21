@@ -147,6 +147,32 @@ def path_points(
     return [[round(x, 2), round(y, 2)] for x, y in kept]
 
 
+def guarded(
+    callback: Callable[..., None],
+    warn: Callable[[str], None],
+    clock: Callable[[], float] = time.monotonic,
+    every: float = 30.0,
+) -> Callable[..., None]:
+    """Run a ROS callback, reporting failures instead of raising them.
+
+    The launch file tears the whole stack down when any process exits; the map page
+    feed must never take mapping or navigation with it.
+    """
+    last: dict[str, float] = {}
+
+    def run(*args: Any) -> None:
+        try:
+            callback(*args)
+        except Exception as error:  # noqa: BLE001 - a display feed fails soft
+            key = f"{getattr(callback, '__name__', 'callback')}: {type(error).__name__}"
+            now = clock()
+            if now - last.get(key, -every) >= every:
+                last[key] = now
+                warn(f"{key}: {error}")
+
+    return run
+
+
 class LogFilter:
     """rosout lines worth showing: INFO and up, colors stripped, repeats folded."""
 

@@ -24,6 +24,7 @@ from ugv_nav_tools.nav_relay import (
     encode_map,
     frame,
     grid_bytes,
+    guarded,
     packet,
     path_points,
     scan_points,
@@ -180,3 +181,26 @@ def test_sender_waits_for_a_missing_listener(tmp_path: Path) -> None:
     sender.close()
     thread.join(timeout=1)
     assert not thread.is_alive()
+
+
+def test_guarded_callbacks_report_instead_of_raising() -> None:
+    warnings: list[str] = []
+    now = [0.0]
+    calls: list[int] = []
+
+    def send_map(value: int) -> None:
+        calls.append(value)
+        if value < 0:
+            raise ValueError("map size out of range")
+
+    safe = guarded(send_map, warnings.append, clock=lambda: now[0], every=30)
+    safe(1)
+    safe(-1)
+    safe(-2)  # same failure within 30 s: not repeated
+    now[0] = 31
+    safe(-3)
+    assert calls == [1, -1, -2, -3]
+    assert warnings == [
+        "send_map: ValueError: map size out of range",
+        "send_map: ValueError: map size out of range",
+    ]

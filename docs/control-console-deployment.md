@@ -319,3 +319,15 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **ugv-nav 0.3.9**：AMCL 改用 `OmniMotionModel`（`alpha5` 0.2），`ugv-loc-health` 状态变化时写日志。原因：原地转时 RF2O 每转 0.05–0.09 rad 报告后退 0.5–1.9 cm，差速模型把它当成接近 180° 的转向来加噪声，转 0.7 rad 后 AMCL 标准差就到 0.20 m / 0.25 rad，触发 `localization_lost`（当时扫描匹配仍有 87%）；换成全向模型后同样的转动只到 0.09 m / 0.11 rad。旧源码备份 `backups/20261021-pre-0.3.9/src.tgz`，构建日志 `build-0.3.9.log`，旧镜像 0.3.8 保留，主机 `.venv` 同步到 0.3.9。回滚：`UGV_NAV_VERSION=0.3.8` 重建容器，主机 `.venv` 装回 0.3.8。
 - **实测结论**：原地转（两侧 ±0.10 m/s）轮速平稳，9 次中只有 1 次某侧出现 18% 的停转时间；直线行驶平稳。原地转并不在原地：每转 1 rad 车身平移 10–15 cm，并且始终绕车身右侧的一个点转（左转时后退，右转时前进），而两侧编码器的转速是对称的，所以是右侧轮子没有真正推动地面。悬空测试（每侧正反转各 5～10 圈，按编码器计圈）中用户看到右后轮明显比右前轮快，查明是轮子打滑，用户当场修好。修好后在木地板上原地左转 367°（约 7.5 s），车身只平移 3.0 cm（约 0.5 cm/rad，修复前 7–15 cm/rad），车身转速约 1.1 rad/s，接近两侧 ±0.10 m/s 的理论值。后果是 Nav2 在终点对朝向时反复滑出 6 cm 的位置容差，来回打转直到超时。卡住保护在书房实际挡住了一次椅子脚轮（雷达扫描高度之下）。
 - **其他**：Pi 在 18:25 修车断电后重启，`ugv-nav` 容器按 `restart: "no"` 没有自启，需要手动 `ugv-navctl mapping`/`localize`。云台摄像头（`usb-Generic_USB_Camera_200901010001`，USB `1-1.2`）17:15–17:20 反复重新识别后掉线，Pi 重启后已重新识别；仍需检查云台转动时线有没有被扯；没有禁行区掩码时 KeepoutFilter 每 2 s 打印一次警告。
+
+## 2026-10-21 地图与导航实时页（Mini 0.7.0 / Pi 0.5.0 / ugv-nav 0.4.1）
+
+用户要求在主控台加导航和建图的实时监控页。实现了 [map-console-design.md](map-console-design.md) M1 的只读部分，另加摄像头画面和导航日志。页面是 `https://car.aimaker.vip/navigation`，左侧栏「地图导航」。
+
+- **数据链路**：容器内 `ugv-nav-relay` 只订阅、不发布，发送地图（北向上的三色 PNG，≤1 Hz）、位姿（10 Hz）、地图坐标下的激光点（≤180 点，5 Hz）、Nav2 路径、模式和定位健康、`/rosout` 日志（INFO 及以上，去颜色码，30 s 内重复的合并计数，≤20 条/s），写入 Pi `ai-tv-pet-agent/nav/stream.sock`（0600）。Pi 代理缓存后，只在 Mini 心跳表示有人打开页面时，经新 WSS 通道 `/internal/v1/agents/laosan/nav` 转发；这条通道出错只会自己隔 5 s 重连，不影响控制、视频和音频。Mini 只在内存里保留最新数据（设备离线即清空），浏览器经 `/ws/nav`（登录、Origin、CSRF 同视频）先拿快照再收增量。每一跳都校验：已知类型、元数据 ≤64 KB、不允许 NaN、只有地图可带 PNG 且 ≤1 MB。
+- **隐私**：地图离开 Pi 只到 Mini 内存和已登录的浏览器，不写盘、不进 Git。
+- **Mini 0.7.0**：`releases/0.7.0-ai_ugv_car-2577a7b/` 内有主控台 0.7.0 和 Pi 代理 0.5.0 两个 wheel（主控台引用 `tvpet_pi.navframe`，Mini 环境原装 Pi 代理 0.3.1，一并升级）。`launchctl bootstrap` 第一次报 `5: Input/output error`（bootout 尚未完成），隔 2 s 重试成功。核验：`/health` `agent_online: true`；公网 `navigation.js`、`navmap.js`、`navigation.css`、`assets/map.svg` 均为 200；未登录访问 `/navigation` 303 到统一登录。回滚：装回 `releases/0.6.3-ai_ugv_car-98b95fc/` 的主控台 wheel（Pi 代理包 0.5.0 可保留）后重启 launchd。
+- **ugv-nav 0.4.0 → 0.4.1**：0.4.1 给监控节点的所有回调加保护，出错只记警告（同类 30 s 一次），不会因 launch 的「任一进程退出即整栈退出」把建图或导航拖垮。旧源码备份 `backups/20261021-pre-0.4.0/src.tgz`，构建日志 `build-0.4.0.log`、`build-0.4.1.log`，旧镜像 0.3.9、0.4.0 保留，主机 `.venv` 同步到 0.4.1。回滚：`UGV_NAV_VERSION=0.3.9` 重建容器，主机 `.venv` 装回 0.3.9。
+- **Pi 代理 0.5.0**：先停容器，再装两个环境、重启服务，最后 `ugv-navctl mapping`（这个房间转圈测试时的临时地图未保存，随之清空）。wheel 在 `releases/0.5.0/`，回滚装回 `releases/0.4.5/`。核验：服务 active；`stream.sock` 0600；容器 `nav_relay` 已连接（`ss -x` 可见）；代理对外 4 条连接（控制、视频、音频、地图）。
+- **验证**：门禁 335 项通过，覆盖率 82%；本机用假设备喂合成房间做了 Playwright 桌面（1440×900）和手机（390×844）预览，无横向溢出、无控制台错误。实车上的网页显示需用户登录后确认。
+- **注意**：部署时驱动板读到的电池电压只有 7.1 V 且仍在下降，充电没有生效，需用户检查。

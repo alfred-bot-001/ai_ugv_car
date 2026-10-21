@@ -30,6 +30,7 @@ from .nav_relay import (
     StreamSender,
     compose,
     encode_map,
+    guarded,
     packet,
     path_points,
     scan_points,
@@ -67,15 +68,19 @@ class NavRelay(Node):  # type: ignore[misc]
         self.log_budget_at = time.monotonic()
         self.dropped_logs = 0
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.create_subscription(OccupancyGrid, "map", self.on_map, latched)
-        self.create_subscription(LaserScan, "scan", self.on_scan, qos_profile_sensor_data)
-        self.create_subscription(PlanMsg, "plan", self.on_plan, 5)
-        self.create_subscription(String, "localization/health", self.on_health, 5)
-        self.create_subscription(Log, "rosout", self.on_log, 200)
-        self.create_timer(0.5, self.send_map)
-        self.create_timer(POSE_PERIOD_S, self.send_pose)
-        self.create_timer(SCAN_PERIOD_S, self.send_scan)
-        self.create_timer(STATE_PERIOD_S, self.send_state)
+
+        def safe(callback: Any) -> Any:
+            return guarded(callback, self.get_logger().warn)
+
+        self.create_subscription(OccupancyGrid, "map", safe(self.on_map), latched)
+        self.create_subscription(LaserScan, "scan", safe(self.on_scan), qos_profile_sensor_data)
+        self.create_subscription(PlanMsg, "plan", safe(self.on_plan), 5)
+        self.create_subscription(String, "localization/health", safe(self.on_health), 5)
+        self.create_subscription(Log, "rosout", safe(self.on_log), 200)
+        self.create_timer(0.5, safe(self.send_map))
+        self.create_timer(POSE_PERIOD_S, safe(self.send_pose))
+        self.create_timer(SCAN_PERIOD_S, safe(self.send_scan))
+        self.create_timer(STATE_PERIOD_S, safe(self.send_state))
 
     def lookup(self, parent: str, child: str) -> Pose2D | None:
         try:

@@ -81,18 +81,19 @@
 ### M1 实时建图
 
 - [x] 设计稿：参考扫地机 App、RViz/Foxglove、Vizanti；不开放 rosbridge，数据走 容器 → Pi 代理 → Mini → 浏览器。
-- [ ] 容器 `ugv_nav_tools/nav_relay.py`：纯编码函数（3 色调色板 PNG、位姿、激光降采样 ≤180 点、路径、状态）与 rclpy 节点分开；限流（地图变化时 ≤1 Hz、位姿 10 Hz、激光 5 Hz）；单元测试。
-- [ ] 容器写入 `ai-tv-pet-agent/nav/stream.sock`（0600）；launch 和镜像带上 nav_relay，ugv-nav 升版本。
-- [ ] Pi 代理 `tvpet_pi/nav_stream.py`：读 UNIX 流、限流转发，新 WSS 通道 `/internal/v1/agents/laosan/nav`，断线重连；测试。
+- [x] 容器 `ugv_nav_tools/nav_relay.py`（ugv-nav 0.4.0，2026-10-21；另带 `/rosout` 日志，回调出错不拖垮导航栈，0.4.1）：纯编码函数（3 色调色板 PNG、位姿、激光降采样 ≤180 点、路径、状态）与 rclpy 节点分开；限流（地图变化时 ≤1 Hz、位姿 10 Hz、激光 5 Hz）；单元测试。
+- [x] 容器写入 `ai-tv-pet-agent/nav/stream.sock`（0600）；launch 和镜像带上 nav_relay，ugv-nav 升版本。
+- [x] Pi 代理 `tvpet_pi/nav_stream.py`：读 UNIX 流、只在有人看页面时转发，新 WSS 通道 `/internal/v1/agents/laosan/nav`，断线自行重连且不影响控制通道；安全停车写入页面日志；测试（Pi 0.5.0）。
 - [ ] Pi 代理控制通道 `nav.mapping` / `nav.save` / `nav.cancel` RPC，复用 navctl 逻辑；测试。
-- [ ] Mini：nav 设备通道鉴权（同 video/audio）、缓存最新整图、`WS /ws/map`（子协议 `console.map.v1`，登录/Origin 校验）；测试。
+- [x] Mini：nav 设备通道鉴权（同 video/audio）、内存缓存（离线即清）、`WS /ws/nav`（子协议 `console.v1`，登录/Origin/CSRF 校验，先发快照再推增量）；测试（Mini 0.7.0）。
 - [ ] Mini：`POST /api/v1/nav/mapping|save|cancel`（登录、CSRF、Origin、审计）；地图名校验；测试。
-- [ ] 前端坐标模块：画布像素 ↔ map 坐标（原点、分辨率、y 翻转、显示旋转）纯函数，带测试。
-- [ ] 前端页面 `map.html` / `map.js` / `map.css`：Canvas 渲染、图层开关、缩放平移、跟随、摆正、比例尺、高 DPI、位姿插值、深色模式。
+- [x] 前端坐标模块 `web/navmap.js`：画布像素 ↔ map 坐标、以光标为中心缩放、适应地图、比例尺、配色替换、中文状态，带 node 测试。显示旋转（摆正）未做。
+- [x] 前端页面 `/navigation`（`navigation.html/js/css`，只读）：Canvas 渲染、图层开关、滚轮/拖动/双指缩放、跟随、比例尺、高 DPI；另有摄像头画面、车辆状态和导航日志。
+- [ ] 页面后续：摆正、位姿插值、深色模式。
 - [ ] 右侧面板：模式卡（面积、用时、SLAM 状态）、开始/保存/放弃建图（二次确认）、内嵌底盘圆盘、常驻急停；手机端底部抽屉。
-- [ ] 新鲜度：位姿超过 3 s 未更新显示「数据中断」；桥停车原因中文显示。
-- [ ] 质量门禁：ruff、format、mypy、pytest 覆盖率 ≥80%。
-- [ ] 部署：ugv-nav 容器、Pi 代理、Mini 主控台依次升级；记录备份与回滚。
+- [x] 新鲜度：位姿超过 3 s 未更新显示「数据中断」；安全停车原因、定位健康原因中文显示。
+- [x] 质量门禁：ruff、format、mypy、pytest 覆盖率 ≥80%；本机 Playwright 桌面/手机预览（假设备数据）。
+- [x] 部署（2026-10-21）：Mini 0.7.0、ugv-nav 0.4.1、Pi 0.5.0；备份与回滚见部署文档。
 - [ ] 实机验收（需用户在场）：遥控建图，网页地图与 `map_saver` 导出一致；位姿延迟 <300 ms；拔网线/断 WSS 显示「数据中断」；桌面和手机各跑一遍 Playwright。
 
 ### M2 地图与定位
