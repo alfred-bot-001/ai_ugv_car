@@ -7,8 +7,9 @@ import struct
 import time
 from pathlib import Path
 
+import pytest
 from tvpet_pi.agent import AgentRuntime
-from tvpet_pi.capture import Frame
+from tvpet_pi.capture import Frame, mjpeg_payload
 
 FRONT = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_AY27552002R-video-index0"
 
@@ -129,3 +130,17 @@ def test_front_status_and_channel_retry(tmp_path: Path, monkeypatch) -> None:
             await task
 
     asyncio.run(scenario())
+
+
+def test_mjpeg_padding_is_trimmed_but_garbage_is_not() -> None:
+    jpeg = b"\xff\xd8\xff\xc0body\xff\xd9"
+    assert mjpeg_payload(jpeg) == jpeg
+    assert mjpeg_payload(jpeg + b"\x00" * 5) == jpeg  # Orbbec pads to 8 bytes
+    for bad in (
+        b"\x00" + jpeg,
+        jpeg + b"\x01\x00",
+        jpeg + b"\x00" * 80,
+        b"\xff\xd8truncated",
+    ):
+        with pytest.raises(ValueError):
+            mjpeg_payload(bad)

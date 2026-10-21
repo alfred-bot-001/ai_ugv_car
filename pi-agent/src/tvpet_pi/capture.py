@@ -26,6 +26,23 @@ class Frame:
     jpeg: bytes
 
 
+MJPEG_PADDING = 64
+
+
+def mjpeg_payload(data: bytes) -> bytes:
+    """A whole JPEG from one driver buffer, without the zero padding some cameras add.
+
+    The front Orbbec (Sonix bridge) pads each frame to 8 bytes after the EOI marker
+    (seen 2026-10-21: 3-5 zero bytes). Anything else after EOI is still rejected.
+    """
+    if not data.startswith(b"\xff\xd8"):
+        raise ValueError("invalid MJPEG frame")
+    end = data.rfind(b"\xff\xd9", max(0, len(data) - MJPEG_PADDING - 2))
+    if end < 0 or data[end + 2 :].strip(b"\x00"):
+        raise ValueError("invalid MJPEG frame")
+    return data[: end + 2]
+
+
 class Camera:
     """Linux 64-bit single-plane MMAP ABI, matching videodev2.h on the target Pi."""
 
@@ -86,9 +103,7 @@ class Camera:
                 raise ValueError("invalid camera buffer")
             seconds, micros = struct.unpack_from("qq", buffer, 24)
             sequence = struct.unpack_from("I", buffer, 56)[0]
-            jpeg = self.maps[index][:size]
-            if not jpeg.startswith(b"\xff\xd8") or not jpeg.endswith(b"\xff\xd9"):
-                raise ValueError("invalid MJPEG frame")
+            jpeg = mjpeg_payload(self.maps[index][:size])
             if flags & 0x2000 != 0x2000:
                 raise ValueError("driver did not provide monotonic timestamp")
             timestamp = seconds * 1_000_000_000 + micros * 1000
