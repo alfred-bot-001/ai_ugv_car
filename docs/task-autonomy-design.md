@@ -59,6 +59,13 @@ S0 的所有检测都只会**停车**，从不发起运动。每项检测有独�
 
 满足时调用 `client.stop()`，并把 `command_note` 设为 `stalled: wheels turning, body still`。`ros_ops.navigate` 读取桥状态，在结果中加 `"stall": true`；`patrol` 遇到 stall 一律终止整次巡航，不重试（需要人去处理障碍）。
 
+**实现记录（2026-10-21，pi-agent 0.4.3 / ugv-nav 0.3.5，未上车验收）**：
+
+- A 的饱和条件改为“PI 积分项达到上限的 90%”，不用“输出达到 `PWM_LIMIT` 的 90%”。按现有增益，目标轮速低于约 0.114 m/s 时输出永远到不了 0.162，而导航常用 0.10 m/s，原条件会让检测形同虚设。其余条件不变：目标 ≥ 0.04 m/s、实测 < 0.01 m/s、持续 1.5 s。
+- 两道检测都只停车，并在 pi-agent 记下 `fault`（`stall_wheel_left/right` 或 `stall_body`），本次 arm 会话作废；`ugv-navctl` 下一段新建 arm 会话时清除。容器侧通过 `{"op":"stop","reason":"stall_body"}` 通知 pi-agent。
+- `ugv-ros-op navigate` 每 0.5 s 查一次 `fault`，出现就取消 Nav2 目标，并把 `fault` 写进结果；巡航本来就在第一段失败时终止。
+- 代码：`pi-agent/src/tvpet_pi/nav.py`（`StallMonitor`）、`ugv-nav/src/ugv_nav_tools/stall.py`、`bridge_node.py`、`ros_ops.py`。
+
 **验收**：在雷达扫描面以下放一个低矮障碍（例如门槛条或软垫），低速驾驶撞上。要求两道检测中至少一道在 **3 s 内**停车并报告原因；正常起步、原地转向和地毯过渡各 10 次不误报。
 
 ### 3.2 定位健康监测

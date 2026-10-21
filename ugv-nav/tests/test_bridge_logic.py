@@ -133,3 +133,20 @@ def test_board_client_round_trip_and_errors(server: tuple[Path, list[bytes]]) ->
     assert [json.loads(r)["op"] for r in received] == ["status", "cmd", "stop", "stop"]
     with pytest.raises(BoardError, match="socket"):
         BoardClient(path.parent / "missing.sock").status()
+
+
+def test_board_client_stop_reason_and_fault(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[dict[str, object]] = []
+    replies = iter(
+        [
+            {"ok": True},
+            {"ok": True, "fault": {"reason": "stall_body", "at": 1.0}},
+            {"ok": True, "fault": None},
+        ]
+    )
+    client = BoardClient(Path("/nonexistent.sock"))
+    monkeypatch.setattr(client, "request", lambda payload: sent.append(payload) or next(replies))
+    client.stop(reason="stall_body")
+    assert sent[-1] == {"op": "stop", "reason": "stall_body"}
+    assert client.fault() == {"reason": "stall_body", "at": 1.0}
+    assert client.fault() is None

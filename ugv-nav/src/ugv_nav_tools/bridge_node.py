@@ -23,13 +23,15 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 from .board_client import BoardClient, BoardError
-from .motion_gate import Perception, front_ranges, gate, rotation_space_clear
+from .motion_gate import STALE_SECONDS, Perception, front_ranges, gate, rotation_space_clear
+from .stall import BodyStallWatch, Pose2D, Sample
 from .wheel_odometry import WheelOdometry
 
 SOCKET = Path("/board/board.sock")
 HEALTH_FILE = Path("/tmp/board_health.json")
 TELEMETRY_MAX_AGE = 0.3
 REQUIRED = ("odl", "odr", "L", "R", "v")
+STALL_NOTE = "stalled: wheels turning, body still"
 
 
 class BoardBridge(Node):  # type: ignore[misc]
@@ -53,6 +55,13 @@ class BoardBridge(Node):  # type: ignore[misc]
         self.last_sample = 0.0
         self.last_status = 0.0
         self.command_note = ""
+        self.stall_watch = BodyStallWatch()
+        self.wheel_pose: Pose2D | None = None
+        self.laser_pose: Pose2D | None = None
+        self.laser_pose_at = 0.0
+        # Latched until pi-agent reports the fault cleared by a new arm session.
+        self.stall_latched = False
+        self.fault_seen = False
         self.create_timer(0.05, self.poll)
 
     def on_laser_odom(self, message: Any) -> None:
@@ -60,9 +69,12 @@ class BoardBridge(Node):  # type: ignore[misc]
         age = abs((self.get_clock().now() - Time.from_msg(message.header.stamp)).nanoseconds) * 1e-9
         unit = abs(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w - 1) < 0.01
         if age < 0.35 and unit and all(map(math.isfinite, (p.x, p.y, q.x, q.y, q.z, q.w))):
+            now = time.monotonic()
             self.seen = Perception(
-                self.seen.scan_at, self.seen.front_count, self.seen.front_min, time.monotonic()
+                self.seen.scan_at, self.seen.front_count, self.seen.front_min, now
             )
+            yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+            self.laser_pose, self.laser_pose_at = Pose2D(p.x, p.y, yaw), now
 
     def on_scan(self, message: Any) -> None:
         front = front_ranges(message.ranges, message.angle_min, message.angle_increment)
@@ -101,6 +113,9 @@ class BoardBridge(Node):  # type: ignore[misc]
 
     def on_cmd_vel(self, message: Any) -> None:
         try:
+            if self.stall_latched:
+                self.client.stop(reason="stall_body")
+                raise ValueError(f"{STALL_NOTE}; re-arm required")
             planar = (message.linear.y, message.linear.z, message.angular.x, message.angular.y)
             if any(abs(v) > 1e-9 for v in planar):
                 raise ValueError("non-planar velocity rejected")
@@ -124,9 +139,15 @@ class BoardBridge(Node):  # type: ignore[misc]
             valid = all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
             if data["age"] is None or data["age"] > TELEMETRY_MAX_AGE or not valid:
                 raise ValueError("stale or invalid hardware telemetry")
+            if data.get("fault"):
+                self.fault_seen = True
+            elif self.stall_latched and self.fault_seen:
+                self.stall_latched = self.fault_seen = False  # a new arm session started
+                self.stall_watch.reset()
             if data["sampled_monotonic"] != self.last_sample:
                 self.last_sample = data["sampled_monotonic"]
                 self.publish(telemetry)
+                self.check_stall(now)
             if now - self.last_status > 1:
                 data |= {
                     "command_note": self.command_note,
@@ -142,6 +163,17 @@ class BoardBridge(Node):  # type: ignore[misc]
             if now - self.last_status > 1:
                 self.status.publish(String(data=json.dumps({"ok": False, "error": str(error)})))
                 self.last_status = now
+
+    def check_stall(self, now: float) -> None:
+        """Stop and end the arm session when the wheels turn but the body stays put."""
+        laser = self.laser_pose
+        if self.wheel_pose is None or laser is None or now - self.laser_pose_at > STALE_SECONDS:
+            self.stall_watch.reset()  # the motion gate already stops on stale laser odometry
+            return
+        if self.stall_watch.add(Sample(now, self.wheel_pose, laser)) and not self.stall_latched:
+            self.stall_latched = True
+            self.command_note = STALL_NOTE
+            self.client.stop(reason="stall_body")
 
     def publish(self, telemetry: dict[str, Any]) -> None:
         pose = self.wheels.update(
@@ -160,6 +192,7 @@ class BoardBridge(Node):  # type: ignore[misc]
         odom.pose.pose.orientation.w = math.cos(pose.yaw / 2)
         odom.twist.twist.linear.x, odom.twist.twist.angular.z = pose.linear, pose.angular
         self.odom.publish(odom)
+        self.wheel_pose = Pose2D(pose.x, pose.y, pose.yaw)
         battery = BatteryState()
         battery.header.stamp = stamp
         battery.header.frame_id = "base_link"

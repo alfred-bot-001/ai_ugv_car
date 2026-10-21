@@ -131,7 +131,7 @@ class NavCtl:
 
     def status(self) -> dict[str, Any]:
         reply = self.board.status()
-        return {k: reply.get(k) for k in ("age", "estopped", "nav_owned", "telemetry")}
+        return {k: reply.get(k) for k in ("age", "estopped", "nav_owned", "fault", "telemetry")}
 
     def set_mode(self, *, mapping: bool, name: str | None = None) -> None:
         self.disarm()

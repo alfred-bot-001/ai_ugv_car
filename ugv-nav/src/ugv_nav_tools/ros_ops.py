@@ -28,6 +28,8 @@ from .route import Pose, goal_errors, quaternion_to_yaw, within_tolerance, yaw_t
 
 SUCCEEDED = 4
 SEND_ATTEMPTS = 2
+# How often navigate() asks pi-agent for a latched safety stop (stall, localization).
+FAULT_POLL_S = 0.5
 # Humble/FastDDS: a request sent right after discovery can lose its response because the
 # reply reader is not matched yet. Spin briefly after discovery before the first call.
 MATCH_SETTLE_S = 0.5
@@ -36,6 +38,14 @@ CANCEL_ENDPOINTS = (
     "/navigate_through_poses/_action/cancel_goal",
     "/follow_path/_action/cancel_goal",
 )
+
+
+def latched_fault(board: BoardClient) -> dict[str, Any] | None:
+    """A failed status read is not a fault; pi-agent's own watchdogs still stop the car."""
+    try:
+        return board.fault()
+    except BoardError:
+        return None
 
 
 class Operator:
@@ -151,9 +161,17 @@ class Operator:
             return result
         future = handle.get_result_async()
         started = time.monotonic()
+        board = BoardClient(SOCKET)
+        next_check = started
         try:
             while not future.done() and time.monotonic() - started < timeout:
                 rclpy.spin_once(self.node, timeout_sec=0.05)
+                if time.monotonic() >= next_check:
+                    next_check = time.monotonic() + FAULT_POLL_S
+                    fault = latched_fault(board)
+                    if fault:
+                        result["fault"] = fault  # stop waiting; the goal is cancelled below
+                        break
             if future.done():
                 result["navigation_status"] = future.result().status
             else:

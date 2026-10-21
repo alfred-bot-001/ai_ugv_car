@@ -17,6 +17,7 @@ from tvpet_pi.nav import (
     PWM_LIMIT,
     REQUEST,
     NavBridge,
+    StallMonitor,
     WheelPI,
     read_arm,
     stick_from_wheels,
@@ -287,3 +288,70 @@ def test_board_health_allows_half_degree_servo_settling(rig: tuple[NavBridge, Mo
     assert board.health_error() == ""
     board.telemetry["pan"] = 45.6
     assert "云台" in board.health_error()
+
+
+def test_stall_monitor_needs_a_saturated_command_held_for_the_window() -> None:
+    controller = WheelPI()
+    monitor = StallMonitor(seconds=1.5)
+    controller.integral = [0.05, 0.05]
+    assert monitor.update(0.0, (0.05, 0.10), (0.05, 0.0), controller) is None
+    assert monitor.update(1.4, (0.05, 0.10), (0.05, 0.0), controller) is None
+    assert monitor.update(1.5, (0.05, 0.10), (0.05, 0.0), controller) == "right"
+
+    # A wheel that starts turning restarts its window (normal start-up).
+    monitor.reset()
+    assert monitor.update(0.0, (0.1, 0.1), (0.0, 0.0), controller) is None
+    assert monitor.update(1.0, (0.1, 0.1), (0.02, 0.02), controller) is None
+    assert monitor.update(2.0, (0.1, 0.1), (0.0, 0.0), controller) is None
+    assert monitor.update(3.4, (0.1, 0.1), (0.0, 0.0), controller) is None
+
+    # Tiny targets and a PI that still has correction budget never trip.
+    monitor.reset()
+    for now in (10.0, 15.0, 20.0):
+        assert monitor.update(now, (0.03, -0.03), (0.0, 0.0), controller) is None
+    controller.integral = [0.02, -0.02]
+    for now in (30.0, 35.0):
+        assert monitor.update(now, (0.1, -0.1), (0.0, 0.0), controller) is None
+
+    # A reversed wheel is judged by magnitude.
+    controller.integral = [-0.05, 0.05]
+    monitor.reset()
+    assert monitor.update(40.0, (-0.08, 0.08), (0.0, 0.08), controller) is None
+    assert monitor.update(41.6, (-0.08, 0.08), (0.0, 0.08), controller) == "left"
+
+
+def test_wheel_stall_stops_and_needs_a_new_arm(rig: tuple[NavBridge, Mock]) -> None:
+    nav, uart = rig
+    write_arm(nav.root)
+    nav.board.guard.heartbeat()
+    assert nav.dispatch({"op": "cmd", "linear": 0.1, "angular": 0})["ok"]
+    nav.stall_monitor.seconds = 0.0
+    nav.controller.integral = [0.05, 0.05]  # telemetry reports both wheels at 0 m/s
+    response = json.loads(nav.handle(b'{"op":"cmd","linear":0.1,"angular":0}\n'))
+    assert not response["ok"] and "stall" in response["error"]
+    assert not nav.owned and wheel_writes(uart)[-1] == {"T": 1, "L": 0.0, "R": 0.0}
+    assert nav.dispatch({"op": "status"})["fault"]["reason"] == "stall_wheel_left"
+    with pytest.raises(ValueError, match="re-arm"):
+        nav.dispatch({"op": "cmd", "linear": 0.1, "angular": 0})
+
+    write_arm(nav.root, id="session-2")
+    assert nav.dispatch({"op": "cmd", "linear": 0.1, "angular": 0})["ok"]
+    assert nav.dispatch({"op": "status"})["fault"] is None
+
+
+def test_container_safety_stop_revokes_the_arm_session(rig: tuple[NavBridge, Mock]) -> None:
+    nav, _ = rig
+    write_arm(nav.root)
+    nav.board.guard.heartbeat()
+    assert nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0})["ok"]
+    assert nav.dispatch({"op": "stop", "reason": "stall_body"}) == {"ok": True}
+    assert not nav.owned and nav.fault is not None and nav.fault["reason"] == "stall_body"
+    with pytest.raises(ValueError, match="re-arm"):
+        nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0})
+    with pytest.raises(ValidationError):
+        nav.dispatch({"op": "stop", "reason": "because"})
+    # A plain stop (e.g. Nav2 finished) does not fault the session.
+    write_arm(nav.root, id="session-2")
+    assert nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0})["ok"]
+    assert nav.dispatch({"op": "stop"}) == {"ok": True}
+    assert nav.fault is None

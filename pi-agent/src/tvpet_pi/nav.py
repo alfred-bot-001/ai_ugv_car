@@ -38,6 +38,12 @@ TURN_GAIN = 2.0
 # T1 wheel-speed ceiling for navigation; stays below the Board runaway threshold.
 PWM_LIMIT = 0.18
 MAX_REQUEST = 4096
+# S0 single-wheel stall (docs/task-autonomy-design.md §3.1 A). Initial values, to be
+# calibrated on the car so normal starts, spins and carpet edges never trip them.
+STALL_TARGET_MIN = 0.04  # m/s commanded on the wheel
+STALL_MEASURED_MAX = 0.01  # m/s measured: the wheel is not turning
+STALL_WINDUP_FRACTION = 0.9  # the PI integral has used up its correction budget
+STALL_WHEEL_SECONDS = 1.5
 
 
 class StatusRequest(BaseModel):
@@ -48,6 +54,8 @@ class StatusRequest(BaseModel):
 class StopRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     op: Literal["stop"]
+    # A container-side safety check; the current arm session can no longer move.
+    reason: Literal["stall_body", "localization_lost"] | None = None
 
 
 class CmdRequest(BaseModel):
@@ -133,6 +141,41 @@ class WheelPI:
         return output[0], output[1]
 
 
+class StallMonitor:
+    """A wheel that is commanded, fully corrected by the PI and still not turning."""
+
+    def __init__(self, seconds: float = STALL_WHEEL_SECONDS) -> None:
+        self.seconds = seconds
+        self.since: list[float | None] = [None, None]
+
+    def reset(self) -> None:
+        self.since = [None, None]
+
+    def update(
+        self,
+        now: float,
+        targets: tuple[float, float],
+        measured: tuple[float, float],
+        controller: WheelPI,
+    ) -> str | None:
+        """Return "left" or "right" once that wheel has been stalled for `seconds`."""
+        for side, name in ((0, "left"), (1, "right")):
+            stalled = (
+                abs(targets[side]) >= STALL_TARGET_MIN
+                and abs(measured[side]) < STALL_MEASURED_MAX
+                and abs(controller.integral[side]) >= STALL_WINDUP_FRACTION * controller.windup
+            )
+            if not stalled:
+                self.since[side] = None
+                continue
+            started = self.since[side]
+            if started is None:
+                self.since[side] = started = now
+            if now - started >= self.seconds:
+                return name
+        return None
+
+
 def stick_from_wheels(left: float, right: float, maximum: float = PWM_LIMIT) -> tuple[float, float]:
     """Inverse of safety.differential at `maximum`, so Board.move reproduces left/right."""
     return (left - right) / (2 * maximum), (left + right) / (2 * maximum)
@@ -159,6 +202,9 @@ class NavBridge:
         self.last_command_at = 0.0
         self.last_control_at = 0.0
         self.controller = WheelPI()
+        self.stall_monitor = StallMonitor()
+        # Set by a safety stop; cleared only by a new operator arm session.
+        self.fault: dict[str, Any] | None = None
         self.threads: list[threading.Thread] = []
 
     @property
@@ -177,8 +223,15 @@ class NavBridge:
             return self._status()
         if isinstance(request, StopRequest):
             self.stop_owned()
+            if request.reason:
+                self.halt(request.reason)
             return {"ok": True}
         return self._command(request)
+
+    def halt(self, reason: str) -> None:
+        """Record a safety stop; this arm session can no longer move the car."""
+        self.fault = {"reason": reason, "at": self.wall()}
+        self.session_deadline = 0.0
 
     def _status(self) -> dict[str, Any]:
         board = self.board
@@ -192,6 +245,7 @@ class NavBridge:
                 "sampled_monotonic": board.received_at,
                 "estopped": board.guard.estopped,
                 "nav_owned": self.owned,
+                "fault": self.fault,
             }
 
     def _command(self, request: CmdRequest) -> dict[str, Any]:
@@ -217,6 +271,9 @@ class NavBridge:
                 self.stop_owned()
                 self.arm_id = arm.session_id
                 self.session_deadline = now + min(ARM_MAX_SECONDS, arm.remaining)
+                self.fault = None
+            if self.fault:
+                raise ValueError(f"halted ({self.fault['reason']}); re-arm required")
             if now >= self.session_deadline:
                 raise ValueError("operator session expired")
             if not self.owned:
@@ -227,6 +284,7 @@ class NavBridge:
                 self.lease = board.guard.acquire()  # rejects an existing manual lease
                 self.sequence = 0
                 self.controller.reset()
+                self.stall_monitor.reset()
                 self.last_control_at = now
                 # The bounded operator session replaces the 2 s joystick press budget.
                 # Fresh one-use challenges, heartbeat and the Board watchdog still apply.
@@ -237,9 +295,12 @@ class NavBridge:
             dt = min(0.1, max(0.0, now - self.last_control_at))
             self.last_control_at = now
             measured = (float(board.telemetry["L"]), float(board.telemetry["R"]))
-            left, right = self.controller.step(
-                wheel_targets(request.linear, request.angular), measured, dt
-            )
+            targets = wheel_targets(request.linear, request.angular)
+            left, right = self.controller.step(targets, measured, dt)
+            stalled = self.stall_monitor.update(now, targets, measured, self.controller)
+            if stalled:
+                self.halt(f"stall_wheel_{stalled}")
+                raise ValueError(f"stall: {stalled} wheel commanded but not turning")
             x, y = stick_from_wheels(left, right)
             board.move(
                 maximum=PWM_LIMIT,
