@@ -11,6 +11,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
+    ExecuteProcess,
     IncludeLaunchDescription,
     RegisterEventHandler,
 )
@@ -56,6 +57,13 @@ def generate_launch_description() -> LaunchDescription:
                     **common,
                 }.items(),
                 condition=IfCondition(LaunchConfiguration("localization")),
+            ),
+            # S0 localization health: stops the car through pi-agent on a jump, a poor
+            # scan-to-map match or wide AMCL covariance (the last two only on a saved map).
+            ExecuteProcess(
+                cmd=["ugv-loc-health", "--localization", LaunchConfiguration("localization")],
+                name="loc_health",
+                output="screen",
             ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(f"{nav2}/navigation_launch.py"),

@@ -15,6 +15,7 @@ ugv-scan-report = "ugv_nav_tools.scan_report:main"
 ugv-board-bridge = "ugv_nav_tools.bridge_node:main"
 ugv-ros-op = "ugv_nav_tools.ros_ops:main"
 ugv-navctl = "ugv_nav_tools.navctl:entry"
+ugv-loc-health = "ugv_nav_tools.loc_health_node:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

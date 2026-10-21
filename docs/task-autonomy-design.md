@@ -82,6 +82,8 @@ SLAM 建图和 AMCL 定位两种模式都会发布 `map→odom` 变换，用它�
 
 S0 **只停车并报告**，不自动重新定位。S1 提供人工确认后执行的 `ugv-navctl relocalize`：原地低速旋转一圈（复用经验证的原地转向空间检查），期间不前进；匹配率恢复到 0.6 以上才算成功。
 
+**实现记录（2026-10-21，ugv-nav 0.3.5，未上车验收）**：`ugv_nav_tools/loc_health.py`（纯逻辑）和 `loc_health_node.py`（入口 `ugv-loc-health`，由 `n3_navigation` 启动，`--localization` 跟随启动参数）。每 0.2 s 判定一次；不健康时，若 pi-agent 还没有 `fault`，就发送 `{"op":"stop","reason":"localization_lost"}`。新 arm 会话开始时如果仍不健康会再次停车，所以“健康恢复且新的 arm 会话”两个条件都满足才能运动。状态发布在 `/localization/health`（JSON）。跳变判定在跳变后保持约 1 s，直到旧样本移出窗口。
+
 阈值来源：0.25 m / 0.35 rad 先取到点容差的约 2.5 倍，需要用 S0 采集的正常巡航记录核对误报率，并在本文中记录实测分布。
 
 ### 3.3 禁行区
