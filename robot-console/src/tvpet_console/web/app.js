@@ -14,6 +14,11 @@ async function api(path,body={}){
 }
 async function action(button,callback){if(button.disabled)return;button.disabled=true;button.dataset.busy='1';try{await callback();}catch(error){toast(error.message);}finally{button.dataset.busy='';button.disabled=false;}}
 function metric(name,value,detail){$('#metric-'+name).textContent=value;$('#detail-'+name).textContent=detail;}
+// 3S pack, same voltage bands as Waveshare's ugv_rpi page plus a full band for a resting ~12.2 V; no percentage without current data.
+function batteryLevel(volts){if(!Number.isFinite(volts)||volts<=0)return null;return volts>=11.7?4:volts>=10.5?3:volts>=10?2:volts>=9.5?1:0;}
+let batteryVolts=null;
+function batteryText(raw,driving){const valid=Number.isFinite(raw)&&raw>0;if(!valid)batteryVolts=null;else if(!driving)batteryVolts=batteryVolts==null?raw:batteryVolts+.2*(raw-batteryVolts);const level=batteryLevel(batteryVolts);
+  return {value:valid?raw.toFixed(2)+' V':'—',level,detail:level==null?(valid?'行驶中，停车后估算':'等待电压数据'):(level===0?'电量低，请尽快充电':'约 '+level+'/4 格')+' · 电压估算'+(driving?' · 行驶中保持':'')};}
 function poseReviewText(review){
   if(!review||review.state==='disabled')return '本机审核采样未开启';
   const saved=Number.isSafeInteger(review.daily_saved)&&review.daily_saved>=0?review.daily_saved:'—';
@@ -36,7 +41,7 @@ function render(data){status=data;const online=data.online,state=data.state||{},
   metric('servo',online&&board.state==='available'?'遥测正常':'未知',board.gimbal_ready&&board.wheels_ready?'可以控制':board.gate_reason||'等待硬件反馈');
   metric('temperature',system.temperature_c!=null?system.temperature_c.toFixed(1)+'°C':'—',system.load1!=null?'系统负载 '+system.load1.toFixed(2):'等待温度数据');
   metric('memory',system.memory_total?Math.round(system.memory_used/system.memory_total*100)+'%':'—',system.memory_total?(system.memory_used/2**30).toFixed(1)+' / '+(system.memory_total/2**30).toFixed(1)+' GB':'等待内存数据');
-  metric('battery',telemetry.v!=null?telemetry.v.toFixed(2)+' V':'—','下位机电压 · 未换算电量');
+  const battery=batteryText(telemetry.v,press?.target==='wheels');metric('battery',battery.value,battery.detail);$('#metric-battery').classList[battery.level===0?'add':'remove']('low');
   $('#control-mode').textContent=board.wheels_ready&&board.gimbal_ready?'控制已验收':'观察模式';
   $('#fan').textContent=system.fan_rpm!=null?system.fan_rpm+' RPM':'未知';$('#throttled').textContent=system.throttled==='throttled=0x0'?'无欠压 / 限频':system.throttled||'未知';
   $('#uart').textContent=board.state==='available'?'收到新遥测 · '+board.age_seconds.toFixed(1)+'秒前':'无新遥测';$('#edge').textContent=(state.edge?.state==='active'?'姿态识别中':labels[state.edge?.state]||'未启用')+(state.edge?.inference_ms!=null?' · '+Math.round(state.edge.inference_ms)+' ms':'');const review=data.pose_review;if($('#pose-review-detail')){$('#pose-review-detail').textContent=poseReviewText(review);$('#pose-review-detail').title=review?.day?'统计日期 '+review.day+' · '+(review.timezone||'Asia/Singapore'):'';}

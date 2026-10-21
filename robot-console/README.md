@@ -49,4 +49,4 @@ CONSOLE_DEV_HTTP=1 CONSOLE_ORIGIN=http://127.0.0.1:8788 uv run robot-console ser
 
 退出先验证本地会话、原 Origin 与 CSRF，再关闭本地会话/控制/媒体并请求家庭控制台撤销关联登录；不依赖上游 introspection 可用。上游退出失败时本地仍退出，页面暂停轮询和控制重连，持续显示失败信息与家庭控制台退出入口，不自动重新 SSO。家庭控制台退出、密码变更或账号降权会在后续核验中撤销 car 权限。
 
-本地测试使用模拟 issuer 和模拟设备，不访问真实机器人：`uv run pytest robot-console/tests/test_sso.py robot-console/tests/test_security.py robot-console/tests/test_online.py`；退出页面的轮询/重连竞态通过 `node robot-console/tests/test_sso_frontend.mjs` 验证。发布需保留原私有数据库/配置及上一版环境；关闭 SSO 的回滚必须明确恢复原版本及配置，不能把配置错误当作回滚开关。
+本地测试使用模拟 issuer 和模拟设备，不访问真实机器人：`uv run pytest robot-console/tests/test_sso.py robot-console/tests/test_security.py robot-console/tests/test_online.py`；退出页面的轮询/重连竞态通过 `node robot-console/tests/test_sso_frontend.mjs` 验证，电池卡估算通过 `node robot-console/tests/test_battery_frontend.mjs` 验证。发布需保留原私有数据库/配置及上一版环境；关闭 SSO 的回滚必须明确恢复原版本及配置，不能把配置错误当作回滚开关。
