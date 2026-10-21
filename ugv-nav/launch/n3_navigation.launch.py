@@ -19,9 +19,47 @@ from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch_ros.actions import Node
 
 CONFIG = "/app/config"
+
+
+def keepout_servers() -> list[Node]:
+    """Mask and filter-info servers for the costmaps' keepout filter (S0 §3.3)."""
+    has_mask = IfCondition(PythonExpression(["'", LaunchConfiguration("keepout"), "' != ''"]))
+    return [
+        Node(
+            package="nav2_map_server",
+            executable="map_server",
+            name="filter_mask_server",
+            parameters=[f"{CONFIG}/nav.yaml", {"yaml_filename": LaunchConfiguration("keepout")}],
+            condition=has_mask,
+            output="screen",
+        ),
+        Node(
+            package="nav2_map_server",
+            executable="costmap_filter_info_server",
+            name="costmap_filter_info_server",
+            parameters=[f"{CONFIG}/nav.yaml"],
+            condition=has_mask,
+            output="screen",
+        ),
+        Node(
+            package="nav2_lifecycle_manager",
+            executable="lifecycle_manager",
+            name="lifecycle_manager_costmap_filters",
+            parameters=[
+                {
+                    "use_sim_time": False,
+                    "autostart": True,
+                    "node_names": ["filter_mask_server", "costmap_filter_info_server"],
+                }
+            ],
+            condition=has_mask,
+            output="screen",
+        ),
+    ]
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -38,6 +76,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("localization", default_value="false"),
             DeclareLaunchArgument("navigation", default_value="true"),
             DeclareLaunchArgument("map", default_value="/maps/map.yaml"),
+            DeclareLaunchArgument("keepout", default_value=""),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource("/app/launch/n1_odometry.launch.py")
             ),
@@ -65,6 +104,7 @@ def generate_launch_description() -> LaunchDescription:
                 name="loc_health",
                 output="screen",
             ),
+            *keepout_servers(),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(f"{nav2}/navigation_launch.py"),
                 launch_arguments={"params_file": f"{CONFIG}/nav.yaml", **common}.items(),

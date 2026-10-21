@@ -227,6 +227,14 @@ local_costmap:
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
         map_subscribe_transient_local: true
+      # S0 keepout zones (e.g. the balcony). Inert until ugv-navctl localize finds a
+      # <map>.keepout.yaml and launches the mask server (keepout:= launch argument).
+      filters:
+      - keepout_filter
+      keepout_filter:
+        plugin: nav2_costmap_2d::KeepoutFilter
+        enabled: true
+        filter_info_topic: /costmap_filter_info
       always_send_full_costmap: true
       # Vendor UGV Rover radius 0.15 m + 2 cm (2026-10-14, user-approved; was a 0.50x0.40 m box).
       robot_radius: 0.17
@@ -268,10 +276,31 @@ global_costmap:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 5.0
         inflation_radius: 0.30
+      # S0 keepout zones (e.g. the balcony). Inert until ugv-navctl localize finds a
+      # <map>.keepout.yaml and launches the mask server (keepout:= launch argument).
+      filters:
+      - keepout_filter
+      keepout_filter:
+        plugin: nav2_costmap_2d::KeepoutFilter
+        enabled: true
+        filter_info_topic: /costmap_filter_info
       always_send_full_costmap: true
       # Vendor UGV Rover radius 0.15 m + 2 cm (2026-10-14, user-approved; was a 0.50x0.40 m box).
       robot_radius: 0.17
       transform_tolerance: 0.5
+costmap_filter_info_server:
+  ros__parameters:
+    use_sim_time: false
+    type: 0
+    filter_info_topic: /costmap_filter_info
+    mask_topic: /keepout_filter_mask
+    base: 0.0
+    multiplier: 1.0
+filter_mask_server:
+  ros__parameters:
+    use_sim_time: false
+    frame_id: map
+    topic_name: /keepout_filter_mask
 map_server:
   ros__parameters:
     use_sim_time: false

@@ -17,17 +17,21 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from . import places as placefile
 from .board_client import BoardClient, BoardError
+from .map_files import load_grid, write_keepout_mask
+from .places import Place, Places, Room, Zone
 from .route import Pose, Route, load_route
 
 ARM_SECONDS = 120.0
 NAVIGATE_TIMEOUT = 110.0
 MAP_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 ROS_ENV = 'source /opt/ugv_ws/install/setup.bash && exec "$@"'
+ENV_MAP = re.compile(r"map:=/maps/([A-Za-z0-9_-]{1,64})\.yaml")
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
@@ -57,7 +61,7 @@ def map_name(value: str) -> str:
     return value
 
 
-def mode_env(*, mapping: bool, map_file: str = "/maps/map.yaml") -> str:
+def mode_env(*, mapping: bool, map_file: str = "/maps/map.yaml", keepout: str = "") -> str:
     """Compose .env selecting SLAM (mapping) or AMCL on a saved map; Nav2 always loaded."""
     flags = {
         "mapping": mapping,
@@ -65,6 +69,8 @@ def mode_env(*, mapping: bool, map_file: str = "/maps/map.yaml") -> str:
         "navigation": True,
     }
     args = " ".join(f"{k}:={str(v).lower()}" for k, v in flags.items()) + f" map:={map_file}"
+    if keepout:
+        args += f" keepout:={keepout}"
     return f"UGV_NAV_LAUNCH=n3_navigation\nUGV_NAV_ARGS={args}\n"
 
 
@@ -135,13 +141,15 @@ class NavCtl:
 
     def set_mode(self, *, mapping: bool, name: str | None = None) -> None:
         self.disarm()
-        map_file = "/maps/map.yaml"
+        map_file, keepout = "/maps/map.yaml", ""
         if not mapping:
             if name is None or not (self.settings.maps / f"{map_name(name)}.yaml").exists():
                 raise ValueError("saved map not found")
             map_file = f"/maps/{name}.yaml"
+            if (self.settings.maps / f"{name}.keepout.yaml").exists():
+                keepout = f"/maps/{name}.keepout.yaml"
         (self.settings.compose_dir / ".env").write_text(
-            mode_env(mapping=mapping, map_file=map_file)
+            mode_env(mapping=mapping, map_file=map_file, keepout=keepout)
         )
         self.compose("up", "-d", "--force-recreate")
 
@@ -173,6 +181,67 @@ class NavCtl:
                 "navigate", str(pose.x), str(pose.y), str(pose.yaw),
                 "--timeout", str(NAVIGATE_TIMEOUT),
             )  # fmt: skip
+
+    def current_map(self) -> str:
+        """The saved map the container is localized on; mapping mode has none."""
+        env = (self.settings.compose_dir / ".env").read_text()
+        match = ENV_MAP.search(env)
+        if "localization:=true" not in env or not match:
+            raise ValueError("not localized on a saved map; run ugv-navctl localize MAP first")
+        return match.group(1)
+
+    def goto(self, place_id: str) -> dict[str, Any]:
+        """Navigate to a named place of the current map (S1 §4.2); targets come only from it."""
+        name = self.current_map()
+        place = placefile.load(self.settings.maps, name).place(place_id)
+        result = self.goal(Pose(place.x, place.y, place.yaw))
+        return result | {"place": place.id, "map": name}
+
+    # Places file editing (S1 §4.1). None of these arm or move the car.
+    def places(self, name: str) -> Places:
+        return placefile.load_or_new(self.settings.maps, map_name(name))
+
+    def save_places(self, places: Places) -> dict[str, Any]:
+        path = placefile.save(self.settings.maps, places)
+        return {"ok": True, "file": path.name, "places": len(places.places)}
+
+    def place_room(self, name: str, room: Room) -> dict[str, Any]:
+        current = self.places(name)
+        rooms = tuple(r for r in current.rooms if r.id != room.id) + (room,)
+        return self.save_places(replace(current, rooms=rooms))
+
+    def place_add(self, name: str, place: Place) -> dict[str, Any]:
+        placefile.check_place(place, load_grid(self.settings.maps / f"{map_name(name)}.yaml"))
+        current = self.places(name)
+        places = tuple(p for p in current.places if p.id != place.id) + (place,)
+        return self.save_places(replace(current, places=places))
+
+    def zone_add(self, name: str, zone: Zone) -> dict[str, Any]:
+        current = self.places(name)
+        zones = tuple(z for z in current.zones if z.id != zone.id) + (zone,)
+        return self.save_places(replace(current, zones=zones))
+
+    def place_rm(self, name: str, item_id: str) -> dict[str, Any]:
+        current = self.places(name)
+        if any(p.room == item_id for p in current.places):
+            raise ValueError(f"room {item_id} still has places; remove them first")
+        updated = replace(
+            current,
+            rooms=tuple(r for r in current.rooms if r.id != item_id),
+            places=tuple(p for p in current.places if p.id != item_id),
+            zones=tuple(z for z in current.zones if z.id != item_id),
+        )
+        if updated == current:
+            raise ValueError(f"no room, place or zone {item_id}")
+        return self.save_places(updated)
+
+    def zones_apply(self, name: str) -> dict[str, Any]:
+        """Write <map>.keepout.pgm/.yaml for Nav2's keepout filter (S0 §3.3)."""
+        current = placefile.load(self.settings.maps, map_name(name))
+        mask, cells = write_keepout_mask(
+            self.settings.maps / f"{name}.yaml", [z.polygon for z in current.zones]
+        )
+        return {"ok": True, "mask": mask.name, "keepout_cells": cells, "zones": len(current.zones)}
 
     def patrol(self, route: Route) -> dict[str, Any]:
         """Drive the route leg by leg; the first failed leg stops the patrol."""
@@ -215,7 +284,80 @@ def parser() -> argparse.ArgumentParser:
     patrol = sub.add_parser("patrol", help="按航点巡航（会运动）")
     patrol.add_argument("route", type=Path)
     patrol.add_argument("--loops", type=int)
+    sub.add_parser("goto", help="导航到当前地图上的地点（会运动）").add_argument("place")
+
+    place = sub.add_parser("place", help="标注房间、地点和禁行区（不会运动）")
+    place.add_argument("map", type=map_name)
+    actions = place.add_subparsers(dest="action", required=True)
+    actions.add_parser("list", help="列出房间、地点和禁行区")
+    room = actions.add_parser("room", help="添加或更新房间")
+    room.add_argument("id")
+    room.add_argument("name")
+    room.add_argument("--alias", action="append", default=[])
+    add = actions.add_parser("add", help="添加或更新地点")
+    add.add_argument("id")
+    add.add_argument("name")
+    add.add_argument("--kind", choices=placefile.PLACE_KINDS, default="observe")
+    add.add_argument("--room")
+    add.add_argument("--alias", action="append", default=[])
+    add.add_argument("--scan", help="云台扫视角度（度），写成 --scan=-90,-45,0,45,90")
+    where = add.add_mutually_exclusive_group(required=True)
+    where.add_argument("--here", action="store_true", help="用车当前的定位位姿")
+    where.add_argument("--at", nargs=3, type=float, metavar=("X", "Y", "YAW"))
+    zone = actions.add_parser("zone", help="添加或更新禁行区（多边形顶点 X,Y）")
+    zone.add_argument("id")
+    zone.add_argument("name")
+    zone.add_argument("vertices", nargs="+")
+    actions.add_parser("rm", help="删除房间、地点或禁行区").add_argument("id")
+    actions.add_parser("apply-zones", help="由禁行区生成 Nav2 掩码")
     return root
+
+
+def vertex(text: str) -> list[float]:
+    x, _, y = text.partition(",")
+    return [float(x), float(y)]
+
+
+def place_command(ctl: NavCtl, args: argparse.Namespace) -> Any:
+    name = args.map
+    if args.action == "list":
+        return ctl.places(name).to_json()
+    if args.action == "room":
+        raw = {"id": args.id, "name": args.name, "aliases": args.alias}
+        room = placefile.parse(
+            {"version": 1, "map": name, "map_sha256": "0" * 64, "rooms": [raw]}
+        ).rooms[0]
+        return ctl.place_room(name, room)
+    if args.action == "add":
+        if args.here:
+            pose = ctl.json_op("pose")
+            x, y, yaw = pose["x"], pose["y"], pose["yaw"]
+        else:
+            x, y, yaw = args.at
+        raw = {
+            "id": args.id,
+            "name": args.name,
+            "kind": args.kind,
+            "aliases": args.alias,
+            "pose": {"x": x, "y": y, "yaw": yaw},
+            "scan": [int(a) for a in args.scan.split(",")] if args.scan else [],
+        }
+        if args.room:
+            raw["room"] = args.room
+        current = ctl.places(name)
+        check = current.to_json()
+        check["places"] = [p for p in check["places"] if p["id"] != args.id] + [raw]
+        parsed = placefile.parse(check)  # validates the room reference and name clashes
+        return ctl.place_add(name, parsed.place(args.id))
+    if args.action == "zone":
+        raw_zone = {"id": args.id, "name": args.name, "polygon": [vertex(v) for v in args.vertices]}
+        zone = placefile.parse(
+            {"version": 1, "map": name, "map_sha256": "0" * 64, "zones": [raw_zone]}
+        ).zones[0]
+        return ctl.zone_add(name, zone)
+    if args.action == "rm":
+        return ctl.place_rm(name, args.id)
+    return ctl.zones_apply(name)
 
 
 def main(argv: Sequence[str] | None = None, ctl: NavCtl | None = None) -> int:
@@ -242,6 +384,10 @@ def main(argv: Sequence[str] | None = None, ctl: NavCtl | None = None) -> int:
         output = ctl.json_op("set-pose", str(args.x), str(args.y), str(args.yaw))
     elif args.op == "goal":
         output = ctl.goal(Pose(args.x, args.y, args.yaw))
+    elif args.op == "goto":
+        output = ctl.goto(args.place)
+    elif args.op == "place":
+        output = place_command(ctl, args)
     else:
         route = load_route(args.route, args.loops)  # validate before any motion
         output = ctl.patrol(route)

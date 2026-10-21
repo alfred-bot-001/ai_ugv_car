@@ -93,6 +93,7 @@ S0 **只停车并报告**，不自动重新定位。S1 提供人工确认后执�
 - 禁行区以多边形写在 S1 的地点文件中（§4.1，`zones`），由 `ugv-navctl zones apply MAP` 生成与地图同分辨率、同原点的 `maps/<map>.keepout.pgm/.yaml`。没有地点文件时不生成掩码，行为与现在一致。
 - 典型用途：沙发和床底（低于雷达）、电线区、楼梯口、宠物食盆。
 - 禁行区只影响规划，不能替代 L1 停车。运动门禁仍然生效。
+- **实现记录（2026-10-21，ugv-nav 0.3.5，未上车验收）**：`ugv-navctl place MAP zone ID NAME X,Y …` 记录多边形，`ugv-navctl place MAP apply-zones` 生成 `maps/<map>.keepout.pgm/.yaml`（`map_files.py`，格子中心在多边形内即禁行）。两层代价地图都配置了 `KeepoutFilter`；`ugv-navctl localize MAP` 发现掩码文件时给启动参数加 `keepout:=…`，`n3_navigation` 才启动掩码服务和过滤信息服务，否则和以前完全一样。家里第一处禁行区是阳台（有门槛和台阶）。
 - 验收：在地图上画一块挡住直线路径的禁行区，导航目标设在禁行区另一侧；路径必须绕行，若无法绕行则规划失败且车不动。
 
 ### 3.4 电量与返航
@@ -155,6 +156,14 @@ S0 **只停车并报告**，不自动重新定位。S1 提供人工确认后执�
 | `ugv-navctl place add ID NAME [--kind K] [--here \| X Y YAW]` | `--here` 取当前定位位姿；推车或遥控到位后记录最方便 |
 | `ugv-navctl place rm ID` | 删除地点 |
 | `ugv-navctl zones apply` | 由 `zones` 生成禁行区掩码（§3.3） |
+
+**实现记录（2026-10-21，ugv-nav 0.3.5）**：`ugv_nav_tools/places.py`、`map_files.py`。在上面的格式上增加了两项，供“自主找人”使用：`rooms`（房间 `id`、`name`、`aliases`，例如卧室、书房、厨房、客厅、客房）；地点可选 `room`（所属房间）和 `scan`（观察时的云台水平角，度，-180～180，最多 9 个）。实际命令：
+
+- `ugv-navctl place MAP list`
+- `ugv-navctl place MAP room ID NAME [--alias A]…`
+- `ugv-navctl place MAP add ID NAME [--kind home|observe|waypoint] [--room R] [--alias A]… [--scan=-90,0,90] (--here | --at X Y YAW)`；保存前检查转向空间
+- `ugv-navctl place MAP zone ID NAME X,Y X,Y X,Y…`、`ugv-navctl place MAP rm ID`、`ugv-navctl place MAP apply-zones`
+- `ugv-navctl goto PLACE`：只在“已在保存的地图上定位”时可用，目标只能来自地点文件。
 
 S1 先用命令行标注；robot-console“地图与导航”页面（[导航设计 §5.3](ros-navigation-design.md)）实现后，在地图上点选地点，调用同一套校验。
 
