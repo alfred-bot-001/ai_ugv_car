@@ -298,3 +298,14 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 ## 2026-10-17 加装 USB HUB 与深度相机后的摄像头修正
 
 加装 VL817 USB HUB 和 Orbbec 深度相机后，深度相机的彩色镜头占用了 `/dev/video0`，原车摄像头变为 `/dev/video2`。Pi 配置原写 `/dev/video0`，导致视频、人脸与姿态采样改用深度相机画面。已将 `agent.json` 的 `camera` 改为 by-id 路径 `/dev/v4l/by-id/usb-Generic_USB_Camera_200901010001-video-index0` 并重启 `ai-tv-pet-agent`；备份为 `private/agent.json.bak-20261017-224724-camera`。验证：`tvpet-pi` 持有 `/dev/video2`，`/dev/video0` 空闲，Mini 收到 control/video/audio 三个通道重连。同时检查：雷达 2 秒 822 帧正常，EXT5V 5.42 V、`throttled=0x0`；插入 HUB 时 USB3 口报过一次 over-current，之后稳定，需留意 HUB 供电。回滚：恢复备份文件并重启服务。
+
+## 2026-10-21 S0 安全补强、USB 麦克风与电池卡（Mini 0.6.3 / Pi 0.4.3 / ugv-nav 0.3.5）
+
+从 main `98b95fc` 构建三个 wheel 部署。只部署，没有做运动测试；`arm.json` 全程为 `enabled:false`。
+
+- **Pi 代理 0.4.3**：卡住检测（`StallMonitor`）、带原因的安全停车（`fault`，新 arm 会话才清除）、可配置的麦克风和扬声器。备份在 Pi `backups/20261021-pre-0.4.3/`（两个环境的 `tvpet_pi/`、`agent.json`、旧 `99-ugv-car.rules`），wheel 在 `releases/0.4.3/`。`agent.json` 改为 `m2: ""`、`microphone: plughw:CARD=ugvmic,DEV=0`、`speaker: plughw:CARD=ugvspk,DEV=0`（仍为 0600）。`/etc/udev/rules.d/99-ugv-car.rules` 新增两条 ALSA 声卡名规则，`udevadm trigger --subsystem-match=sound --action=change` 当场生效。核验：服务 active，导航套接字 `status` 带 `fault: null`，电压 11.92 V；`ugvmic` 录 2 s 正常（环境 −47 dBFS），`ugvspk` 可打开；Mini `/health` `agent_online: true`。
+- **ugv-nav 0.3.5**：两道卡住检测的容器侧、`ugv-loc-health`、地点文件与 `place`/`goto`、禁行区掩码与 KeepoutFilter、电量门槛。旧源码备份 `/home/ws/deploy/ugv-nav/backups/20261021-pre-0.3.5/src.tgz`，旧镜像 `ai-ugv-car/ugv-nav:0.3.4` 保留；构建日志 `build-0.3.5.log`；主机 `.venv` 的 `ugv-navctl` 同步升级到 0.3.5。以建图模式启动：Nav2 `Managed nodes are active`；`loc_health` 运行，`/localization/health` 为 healthy；`/scan` 10.0 Hz；两层代价地图加载了 `keepout_filter`，没有掩码时只反复打印 `Filter mask was not received` 警告，不影响运行。
+- **Mini 主控台 0.6.3**：电池卡显示电压估算格数，麦克风文字不再写 M2。wheel 在 `releases/0.6.3-ai_ugv_car-98b95fc/`；公网 `app.js` 已是新版本，`/health` 恢复 `agent_online: true`。
+- **回滚**：Pi 代理装回 `releases/0.4.1` 的 wheel（两个环境），恢复备份的 `agent.json` 和 udev 规则后 `udevadm trigger`，重启服务；ugv-nav 设 `UGV_NAV_VERSION=0.3.4` 重建容器，主机 `.venv` 装回 0.3.4；Mini 装回 `releases/0.6.2` 后重启 launchd。
+- **待办**：S0-1～S0-7 实车验收（需要用户在场、清场）；阈值按验收数据校准。
+
