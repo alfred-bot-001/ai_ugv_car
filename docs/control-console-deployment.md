@@ -331,3 +331,12 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **Pi 代理 0.5.0**：先停容器，再装两个环境、重启服务，最后 `ugv-navctl mapping`（这个房间转圈测试时的临时地图未保存，随之清空）。wheel 在 `releases/0.5.0/`，回滚装回 `releases/0.4.5/`。核验：服务 active；`stream.sock` 0600；容器 `nav_relay` 已连接（`ss -x` 可见）；代理对外 4 条连接（控制、视频、音频、地图）。
 - **验证**：门禁 335 项通过，覆盖率 82%；本机用假设备喂合成房间做了 Playwright 桌面（1440×900）和手机（390×844）预览，无横向溢出、无控制台错误。实车上的网页显示需用户登录后确认。
 - **注意**：部署时驱动板读到的电池电压只有 7.1 V 且仍在下降，充电没有生效，需用户检查。
+
+## 2026-10-21 前置 Orbbec 彩色相机接入主控台（Mini 0.8.0 / Pi 0.6.0）
+
+- **做法**：Orbbec 初代 Gemini 的彩色部分是普通 UVC 相机（MJPEG 640×480），复用 Pi 代理的 V4L2 采集类。Pi 代理新增可选配置 `front_camera`（为空即关闭），走独立的 `front` 媒体通道：只在有人观看时打开，靠 Mini 心跳续期（与云台相机相同），不做姿态推理；这条通道被拒或出错只会自己重连，不影响控制链路。Mini 新增设备通道 `front` 和浏览器 `/ws/front`（登录、Origin、CSRF 同视频），不做人脸识别，也不参与后台采样。设备总览的视频面板和地图页都可以切换「云台 / 前置」，地图页默认前置。
+- **实机发现**：这台相机每帧在 JPEG 结束标记后补 3～5 个零字节（凑 8 字节对齐），原来的严格检查会把整帧判为无效。现在只去掉 EOI 后最多 64 个零字节，其他多余字节照拒。修复后在车上用正式采集线程取帧正常（约 11.9 KB/帧）。
+- **配置**：Pi `private/agent.json` 新增 `front_camera` = `/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_AY27552002R-video-index0`（仍为 0600）；原文件备份在 `backups/20261021-pre-0.6.0/agent.json`。
+- **部署**：Mini `releases/0.8.0-ai_ugv_car-e255c75/`（主控台 0.8.0 和 Pi 代理 0.6.0 两个 wheel），`/health` 正常，公网脚本已是新版。Pi wheel 在 `releases/0.6.0/`；先停容器、装两个环境、重启服务，再 `ugv-navctl mapping`。核验：服务 active，代理对外 5 条连接（控制、视频、音频、地图、前置），导航中继已连接。门禁 341 项通过，覆盖率 82%；本机 Playwright 预览两个页面的前置画面正常。
+- **回滚**：Mini 装回 `releases/0.7.0-ai_ugv_car-2577a7b/`；Pi 装回 `releases/0.5.0/` 并恢复备份的 `agent.json`（去掉 `front_camera` 也可单独关闭前置相机）。
+- **未做**：深度图。新版 Orbbec SDK 不认这台初代 Gemini，要正式部署 OpenNI2 驱动；之前的测试环境在 `/tmp`，Pi 重启后已清空。
