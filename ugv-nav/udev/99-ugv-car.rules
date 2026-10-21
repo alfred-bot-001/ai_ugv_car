@@ -2,3 +2,9 @@
 #   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=tty
 # D500 / LD19 LiDAR behind a CP2102 bridge on its own USB port.
 SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="0001", SYMLINK+="ugv_lidar"
+# Fixed ALSA card ids, so the speaker and the USB microphone cannot swap names
+# with USB enumeration order. Apply with: sudo udevadm trigger --subsystem-match=sound --action=change
+# JMTek USB PnP speaker.
+SUBSYSTEM=="sound", KERNEL=="card*", ATTRS{idVendor}=="0c76", ATTRS{idProduct}=="1229", ATTR{id}="ugvspk"
+# Jieli USB microphone (capture only, mono 48 kHz).
+SUBSYSTEM=="sound", KERNEL=="card*", ATTRS{idVendor}=="4c4a", ATTRS{idProduct}=="4155", ATTR{id}="ugvmic"

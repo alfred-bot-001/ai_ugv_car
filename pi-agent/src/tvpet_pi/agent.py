@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 import secrets
 import ssl
 import struct
@@ -29,6 +30,14 @@ from .protocol import AGENT_PROTOCOL, Stick
 from .safety import Guard
 
 LOGGER = logging.getLogger(__name__)
+M2_MICROPHONE = "hw:CARD=XFMDPV0018,DEV=0"
+
+
+def alsa_card_present(device: str, cards: str) -> bool:
+    """True when the CARD=<id> named by an ALSA device string is in /proc/asound/cards."""
+    match = re.search(r"CARD=([^,]+)", device)
+    ids = re.findall(r"^\s*\d+\s+\[(\S+)\s*\]", cards, re.MULTILINE)
+    return match is not None and match.group(1) in ids
 
 
 class AgentRuntime:
@@ -42,9 +51,13 @@ class AgentRuntime:
         self.board = Board(str(config.get("uart", "/dev/ttyAMA0")), self.guard, evidence)
         nav_dir = config.get("nav_dir")
         self.nav = NavBridge(self.board, Path(str(nav_dir))) if nav_dir else None
-        self.m2 = M2Link(str(config.get("m2", "/dev/m2_mic")))
+        # A plain USB microphone has no M2 serial link; set "m2" to "" for it.
+        m2_path = str(config.get("m2", "/dev/m2_mic"))
+        self.m2 = M2Link(m2_path) if m2_path else None
         self.camera = CaptureWorker(Camera(str(config.get("camera", "/dev/video0"))))
-        self.microphone = CaptureWorker(Microphone())
+        self.microphone_device = str(config.get("microphone", M2_MICROPHONE))
+        self.microphone = CaptureWorker(Microphone(self.microphone_device))
+        self.speaker_device = str(config.get("speaker", "plughw:CARD=Device,DEV=0"))
         self.snapshot_id = ""
         self.snapshot_min_version = 0
         self.snapshot_until = 0.0
@@ -89,9 +102,9 @@ class AgentRuntime:
                 else "active"
                 if self.microphone.active
                 else "available"
-                if "XFMDPV0018" in cards
+                if alsa_card_present(self.microphone_device, cards)
                 else "unknown",
-                "format": "M2 · 16kHz / 单声道 / S16_LE",
+                "format": ("M2" if self.m2 else "USB 麦克风") + " · 16kHz / 单声道 / S16_LE",
                 "dbfs": self.audio_dbfs,
                 "signal": "quiet"
                 if self.audio_dbfs is not None and self.audio_dbfs < -65
@@ -102,7 +115,7 @@ class AgentRuntime:
                 "state": "active"
                 if self.playback and self.playback.poll() is None
                 else "available"
-                if "USB PnP Audio Device" in cards
+                if alsa_card_present(self.speaker_device, cards)
                 else "unknown"
             },
             "edge": {
@@ -150,7 +163,7 @@ class AgentRuntime:
                 raise ValueError("unsupported playback WAV")
         self._stop_playback()
         self.playback = subprocess.Popen(
-            ["aplay", "-q", "-D", "plughw:CARD=Device,DEV=0"],
+            ["aplay", "-q", "-D", self.speaker_device],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -195,7 +208,7 @@ class AgentRuntime:
                 else:
                     self.audio_enabled = enabled
                 if enabled and not worker.active:
-                    if channel == "audio":
+                    if channel == "audio" and self.m2:
                         self.m2.wake()
                     await asyncio.to_thread(worker.start)
                 elif not enabled:
@@ -336,7 +349,8 @@ class AgentRuntime:
         self.board.open()
         if self.nav and self.board.serial is not None:
             self.nav.start()
-        self.m2.open()
+        if self.m2:
+            self.m2.open()
         try:
             while True:
                 tasks: list[asyncio.Task[None]] = []
@@ -385,7 +399,8 @@ class AgentRuntime:
         finally:
             self.board.close()
             self.stop_playback()
-            self.m2.close()
+            if self.m2:
+                self.m2.close()
 
 
 def run_agent(config_path: Path) -> None:

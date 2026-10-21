@@ -110,7 +110,7 @@ class Camera:
 
 
 class Microphone:
-    """M2 processed output has exactly one channel at 16kHz S16_LE."""
+    """One channel at 16kHz S16_LE; use a plughw device for microphones that only run at 48kHz."""
 
     def __init__(self, device: str = "hw:CARD=XFMDPV0018,DEV=0") -> None:
         self.device = device
@@ -142,10 +142,10 @@ class Microphone:
         if not self.process or not self.process.stdout:
             raise ValueError("microphone is closed")
         if not select.select([self.process.stdout], [], [], 1)[0]:
-            raise TimeoutError("M2 capture timeout")
+            raise TimeoutError("microphone capture timeout")
         chunk = self.process.stdout.read(640)
         if len(chunk) != 640:
-            raise ValueError("M2 audio stream ended")
+            raise ValueError("microphone audio stream ended")
         return bytes(chunk)
 
     def close(self) -> None:

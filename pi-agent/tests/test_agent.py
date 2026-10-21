@@ -10,7 +10,7 @@ import wave
 from unittest.mock import Mock
 
 import pytest
-from tvpet_pi.agent import AgentRuntime
+from tvpet_pi.agent import AgentRuntime, alsa_card_present
 from tvpet_pi.capture import Frame
 
 
@@ -154,5 +154,34 @@ def test_video_snapshot_new_frame_and_audio_latest() -> None:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         assert socket.sent == [bytes(640)] and runtime.audio_dbfs < -65
+
+    asyncio.run(scenario())
+
+
+def test_usb_microphone_without_m2(monkeypatch) -> None:
+    cards = (
+        " 2 [ugvspk         ]: USB-Audio - USB PnP Audio Device\n"
+        " 3 [ugvmic         ]: USB-Audio - USB Composite Device\n"
+    )
+    assert alsa_card_present("plughw:CARD=ugvmic,DEV=0", cards)
+    assert not alsa_card_present("hw:CARD=XFMDPV0018,DEV=0", cards)
+    assert not alsa_card_present("default", cards)
+
+    async def scenario():
+        runtime = AgentRuntime(
+            {
+                "m2": "",
+                "microphone": "plughw:CARD=ugvmic,DEV=0",
+                "speaker": "plughw:CARD=ugvspk,DEV=0",
+            }
+        )
+        assert runtime.m2 is None
+        assert runtime.microphone.adapter.device == "plughw:CARD=ugvmic,DEV=0"
+        runtime.microphone = Worker()
+        runtime.control = Socket()
+        await runtime.command(
+            {"id": "a", "action": "media.set", "args": {"channel": "audio", "enabled": True}}
+        )
+        assert json.loads(runtime.control.sent[-1])["ok"] and runtime.microphone.active
 
     asyncio.run(scenario())

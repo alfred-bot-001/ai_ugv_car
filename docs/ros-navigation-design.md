@@ -23,7 +23,8 @@
 | **2D 激光雷达** | `/dev/ttyUSB0`，CP2102（`usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001`），230400 波特率 | 被动读 1 秒：19581 字节，416 个 `0x54 0x2C` 帧头，转速字段约 3566°/s ≈ 9.9 Hz。数据格式与 LD19/LD06 一致；具体型号按 Waveshare D500（LD19）配置，并在 N0 阶段确认 |
 | M2 麦克风串口 | `/dev/ttyACM0`（WCH，`/dev/m2_mic`） | 由 `pi-agent` 使用 |
 | 未知 CDC 串口 | `/dev/ttyACM1`（`1a86_USB_Single_Serial_56F2035721`） | 三种波特率下 1 秒都没有数据，用途待查 |
-| 摄像头 | Realtek USB Camera，`/dev/video0` | 不是深度相机 |
+| 摄像头 | Realtek USB Camera（`0bda:5842`），按 by-id `usb-Generic_USB_Camera_200901010001-video-index0` 使用 | 不是深度相机。2026-10-17 加装深度相机后它变为 `/dev/video2` |
+| 深度相机 | Orbbec USB 2.0 结构光（深度 `2bc5:0614` + 彩色 `2bc5:0511`，彩色为 `/dev/video0`），经 VL817 USB HUB 接入 | 2026-10-17 加装；深度流待在 ugv-nav 容器中验证 |
 | ROS / Docker | 主机没有 ROS2；Docker 29.9（`ws` 不在 docker 组，用 sudo）；已有 2026-10-13 的导航镜像与容器，见 §2.4 | `docker images`、`docker ps -a` |
 
 注意：厂家默认雷达在 `/dev/ttyACM0`，这和我们的 M2 冲突。另外现有 udev 规则把 `/dev/xunfei_mic` 同时链接到了三个串口设备，属于规则错误，需要在 N0 修正。设备一律用 by-id 稳定名称，不能取 `/dev/ttyACM*` 的第一个匹配项（[主控台设计 §10.2](control-console-design.md)）。

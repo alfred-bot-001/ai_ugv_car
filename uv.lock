@@ -48,7 +48,7 @@ provides-extras = ["speech"]
 
 [[package]]
 name = "ai-tv-pet-pi-agent"
-version = "0.4.1"
+version = "0.4.2"
 source = { editable = "pi-agent" }
 dependencies = [
     { name = "httpx" },

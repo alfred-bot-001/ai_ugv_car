@@ -37,7 +37,7 @@ function render(data){status=data;const online=data.online,state=data.state||{},
   $('#connection-banner').className='notice '+(online?'good':'');
   $('#connection-banner').textContent=online?(board.wheels_ready&&board.gimbal_ready?'老三已就绪 · 拖动圆盘控制动作，松手停止。':'设备暂不可控 · '+(board.gate_reason||'等待硬件反馈正常后恢复控制。')):'老三尚未连接或数据已过期。Mini 主控台正常，设备操作暂停。';
   metric('camera',labels[state.camera?.state]||'未知',state.camera?.error||state.camera?.format||'未取得摄像头信息');
-  metric('microphone',labels[state.microphone?.state]||'未知',state.microphone?.dbfs!=null?state.microphone.dbfs.toFixed(1)+' dBFS · M2':state.microphone?.format||'等待 M2 状态');
+  metric('microphone',labels[state.microphone?.state]||'未知',state.microphone?.dbfs!=null?state.microphone.dbfs.toFixed(1)+' dBFS':state.microphone?.format||'等待麦克风状态');
   metric('servo',online&&board.state==='available'?'遥测正常':'未知',board.gimbal_ready&&board.wheels_ready?'可以控制':board.gate_reason||'等待硬件反馈');
   metric('temperature',system.temperature_c!=null?system.temperature_c.toFixed(1)+'°C':'—',system.load1!=null?'系统负载 '+system.load1.toFixed(2):'等待温度数据');
   metric('memory',system.memory_total?Math.round(system.memory_used/system.memory_total*100)+'%':'—',system.memory_total?(system.memory_used/2**30).toFixed(1)+' / '+(system.memory_total/2**30).toFixed(1)+' GB':'等待内存数据');
@@ -46,7 +46,7 @@ function render(data){status=data;const online=data.online,state=data.state||{},
   $('#fan').textContent=system.fan_rpm!=null?system.fan_rpm+' RPM':'未知';$('#throttled').textContent=system.throttled==='throttled=0x0'?'无欠压 / 限频':system.throttled||'未知';
   $('#uart').textContent=board.state==='available'?'收到新遥测 · '+board.age_seconds.toFixed(1)+'秒前':'无新遥测';$('#edge').textContent=(state.edge?.state==='active'?'姿态识别中':labels[state.edge?.state]||'未启用')+(state.edge?.inference_ms!=null?' · '+Math.round(state.edge.inference_ms)+' ms':'');const review=data.pose_review;if($('#pose-review-detail')){$('#pose-review-detail').textContent=poseReviewText(review);$('#pose-review-detail').title=review?.day?'统计日期 '+review.day+' · '+(review.timezone||'Asia/Singapore'):'';}
   $('#speaker-state').textContent=state.speaker?.state==='active'?'扬声器播放中':state.speaker?.state==='available'?'扬声器已识别':'扬声器未知';
-  $('#audio-detail').textContent=state.microphone?.error||state.microphone?.format||'等待 M2 状态';
+  $('#audio-detail').textContent=state.microphone?.error||state.microphone?.format||'等待麦克风状态';
   $('#last-update').textContent=online?'数据更新 '+new Date(system.sampled_at*1000).toLocaleTimeString('zh-CN',{hour12:false}):'设备数据不可用';
   for(const target of ['wheels','gimbal']){const ready=online&&board[target+'_ready']&&!board.estopped,element=$('#stick-'+target);element.setAttribute('aria-disabled',String(!ready));$('#gate-'+target).textContent=board.estopped?'急停锁定':ready?'可以控制':!online?'设备离线':board.control_qualified?'等待硬件恢复':'硬件待检查';$('#gate-'+target).className='badge '+(ready?'':'warning');
     $('#feedback-'+target).textContent=target==='wheels'&&telemetry.L!=null?'左轮 '+telemetry.L.toFixed(3)+' / 右轮 '+telemetry.R.toFixed(3)+' · '+(ready?'已验收':board.gate_reason):ready?'拖动圆盘转动视角。':board.gate_reason||'设备离线，控制已锁定。';}

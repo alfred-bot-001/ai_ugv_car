@@ -294,3 +294,7 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - 实机核验：服务 active；`board.sock` 为 0600；`status` 返回完整 T1001 遥测（年龄 0.27 s，`nav_owned=false`）；`arm.json` 为 `enabled:false` 时运动请求返回 `motion is disarmed`；非法请求被拒绝；Mini `/health` 显示 `agent_online: true`。
 - 回滚：停服务，把备份目录复制回两个环境的 `site-packages/tvpet_pi/`，或安装 `releases/0.3.1` 的 wheel 并去掉 `nav_dir`；最后启动服务。
 - Mini 的协议包仍为 0.3.1；0.4.0 没有改动 Mini 与 Pi 之间的协议，Mini 不需要更新。
+
+## 2026-10-17 加装 USB HUB 与深度相机后的摄像头修正
+
+加装 VL817 USB HUB 和 Orbbec 深度相机后，深度相机的彩色镜头占用了 `/dev/video0`，原车摄像头变为 `/dev/video2`。Pi 配置原写 `/dev/video0`，导致视频、人脸与姿态采样改用深度相机画面。已将 `agent.json` 的 `camera` 改为 by-id 路径 `/dev/v4l/by-id/usb-Generic_USB_Camera_200901010001-video-index0` 并重启 `ai-tv-pet-agent`；备份为 `private/agent.json.bak-20261017-224724-camera`。验证：`tvpet-pi` 持有 `/dev/video2`，`/dev/video0` 空闲，Mini 收到 control/video/audio 三个通道重连。同时检查：雷达 2 秒 822 帧正常，EXT5V 5.42 V、`throttled=0x0`；插入 HUB 时 USB3 口报过一次 over-current，之后稳定，需留意 HUB 供电。回滚：恢复备份文件并重启服务。
