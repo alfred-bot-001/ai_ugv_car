@@ -104,6 +104,19 @@ def generate_launch_description() -> LaunchDescription:
                 name="loc_health",
                 output="screen",
             ),
+            # Read-only feed for the console's map page (map, pose, scan, plan, logs) through
+            # pi-agent's nav/stream.sock; it never publishes.
+            ExecuteProcess(
+                cmd=[
+                    "ugv-nav-relay",
+                    "--mapping",
+                    LaunchConfiguration("mapping"),
+                    "--map",
+                    LaunchConfiguration("map"),
+                ],
+                name="nav_relay",
+                output="screen",
+            ),
             *keepout_servers(),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(f"{nav2}/navigation_launch.py"),

@@ -246,6 +246,8 @@ class NavBridge:
         # Set by a safety stop; cleared only by a new operator arm session.
         self.fault: dict[str, Any] | None = None
         self.threads: list[threading.Thread] = []
+        # Told about safety stops (the map page log); must not raise.
+        self.notify: Callable[[str], None] | None = None
 
     @property
     def owned(self) -> bool:
@@ -274,6 +276,9 @@ class NavBridge:
         """Record a safety stop; this arm session can no longer move the car."""
         self.fault = {"reason": reason, "at": self.wall()}
         self.session_deadline = 0.0
+        if self.notify is not None:
+            with contextlib.suppress(Exception):
+                self.notify(reason)
 
     def _status(self) -> dict[str, Any]:
         board = self.board

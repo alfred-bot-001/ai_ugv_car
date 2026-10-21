@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
+from tvpet_pi.navframe import NavCache
 from tvpet_pi.protocol import MAX_AUDIO, MAX_JPEG, PoseResult
 
 from .faces import FaceVideo
@@ -38,7 +39,10 @@ class Gateway:
         self.audio = b""
         self.audio_version = 0
         self.snapshots: dict[str, asyncio.Future[bytes]] = {}
-        self.viewer_counts = {"video": 0, "audio": 0}
+        self.viewer_counts = {"video": 0, "audio": 0, "nav": 0}
+        # Map page feed: memory only (the map is the home's floor plan), cleared offline.
+        self.nav = NavCache()
+        self.nav_event = asyncio.Condition()
         self.viewer_lock = asyncio.Lock()
         self.channels: dict[str, WebSocket] = {}
 
@@ -107,6 +111,7 @@ class Gateway:
             self.challenge_lease = ""
             self.video = b""
             self.audio = b""
+            self.nav.clear()
             self.faces.reset()
             for pending_result in self.pending.values():
                 if not pending_result.done():
@@ -126,6 +131,7 @@ class Gateway:
                     "kind": "heartbeat",
                     "video": (self.viewer_counts["video"] > 0 or self.background_video),
                     "audio": self.viewer_counts["audio"] > 0,
+                    "nav": self.viewer_counts["nav"] > 0,
                 }
             )
             await asyncio.sleep(0.2)
@@ -177,6 +183,21 @@ class Gateway:
                 if channel == "video":
                     self.faces.reset(self.viewer_counts["video"] > 0 or self.background_video)
 
+    async def nav_loop(self, websocket: WebSocket) -> None:
+        """Map page packets from pi-agent: validated, cached, then announced to viewers."""
+        if "nav" in self.channels:
+            raise ValueError("duplicate nav channel")
+        self.channels["nav"] = websocket
+        try:
+            while True:
+                self.nav.add(await websocket.receive_bytes())
+                async with self.nav_event:
+                    self.nav_event.notify_all()
+        finally:
+            if self.channels.get("nav") is websocket:
+                self.channels.pop("nav", None)
+                self.nav.clear()
+
     async def viewer(self, channel: str, delta: int) -> None:
         async with self.viewer_lock:
             await self._viewer(channel, delta)
@@ -185,6 +206,9 @@ class Gateway:
         next_count = max(0, self.viewer_counts[channel] + delta)
         if delta > 0 and not self.online:
             raise ValueError("老三离线")
+        if channel == "nav":  # the heartbeat carries it; pi-agent needs no command
+            self.viewer_counts[channel] = next_count
+            return
         if self.online:
             await self.rpc(
                 "media.set",

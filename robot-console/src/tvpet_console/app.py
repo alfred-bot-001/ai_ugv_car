@@ -190,6 +190,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def page(request: Request) -> Response:
         return await render_page(request, "dashboard.html", "/")
 
+    @app.get("/navigation", response_class=HTMLResponse)
+    async def navigation_page(request: Request) -> Response:
+        return await render_page(request, "navigation.html", "/navigation")
+
     @app.get("/photos", response_class=HTMLResponse)
     async def photo_page(request: Request) -> Response:
         return await render_page(request, "photos.html", "/photos")
@@ -608,6 +612,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             with contextlib.suppress(Exception):
                 await websocket.close()
 
+    @app.websocket("/ws/nav")
+    async def nav_socket(websocket: WebSocket) -> None:
+        """Live map page feed: a snapshot first, then every new packet (read-only)."""
+        auth = await browser_auth(websocket)
+        if auth is None:
+            return
+        _, token = auth
+        acquired = False
+        disconnected = asyncio.create_task(websocket.receive())
+        try:
+            await gateway.viewer("nav", 1)
+            acquired = True
+            seq, packets = gateway.nav.snapshot()
+            while await authenticate(token, cached=True) and gateway.online:
+                for data in packets:
+                    await asyncio.wait_for(websocket.send_bytes(data), timeout=0.5)
+                if disconnected.done():
+                    break
+                async with gateway.nav_event:
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(gateway.nav_event.wait(), timeout=1)
+                seq, update = gateway.nav.since(seq)
+                if update is None:
+                    seq, update = gateway.nav.snapshot()
+                packets = update
+        except (WebSocketDisconnect, ValueError, TimeoutError, RuntimeError):
+            pass
+        finally:
+            disconnected.cancel()
+            await asyncio.gather(disconnected, return_exceptions=True)
+            browsers.discard(websocket)
+            browser_tokens.pop(websocket, None)
+            if acquired:
+                with contextlib.suppress(ValueError, TimeoutError):
+                    await gateway.viewer("nav", -1)
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1000)
+
     @app.websocket("/ws/{channel}")
     async def media_socket(websocket: WebSocket, channel: str) -> None:
         if channel not in ("video", "audio"):
@@ -677,7 +719,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def agent_socket(websocket: WebSocket, agent_id: str, channel: str) -> None:
         token = websocket.headers.get("authorization", "").removeprefix("Bearer ")
         allowed = (
-            channel in ("control", "video", "audio")
+            channel in ("control", "video", "audio", "nav")
             and agent_id == settings.agent_id
             and store.agent_valid(agent_id, token)
             and AGENT_PROTOCOL in websocket.headers.get("sec-websocket-protocol", "")
@@ -697,6 +739,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             if channel == "control":
                 await gateway.control_loop(websocket)
+            elif channel == "nav":
+                await gateway.nav_loop(websocket)
             else:
                 await gateway.media_loop(websocket, channel)
         except (WebSocketDisconnect, ValueError, TimeoutError, RuntimeError, json.JSONDecodeError):

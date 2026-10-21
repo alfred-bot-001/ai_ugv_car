@@ -25,6 +25,8 @@ from .capture import Camera, CaptureWorker, Frame, Microphone
 from .hardware import Board, system_status
 from .m2 import M2Link
 from .nav import NavBridge
+from .nav_stream import NavStream
+from .navframe import make_packet
 from .pose_process import PoseProcess
 from .protocol import AGENT_PROTOCOL, Stick
 from .safety import Guard
@@ -51,6 +53,12 @@ class AgentRuntime:
         self.board = Board(str(config.get("uart", "/dev/ttyAMA0")), self.guard, evidence)
         nav_dir = config.get("nav_dir")
         self.nav = NavBridge(self.board, Path(str(nav_dir))) if nav_dir else None
+        # Map page feed from the ugv-nav relay; forwarded only while the page is open.
+        self.nav_stream = NavStream(Path(str(nav_dir)), self.board.closed) if nav_dir else None
+        if self.nav and self.nav_stream:
+            stream = self.nav_stream
+            self.nav.notify = lambda reason: stream.log("WARN", "安全停车：" + reason)
+        self.nav_viewers_until = 0.0
         # A plain USB microphone has no M2 serial link; set "m2" to "" for it.
         m2_path = str(config.get("m2", "/dev/m2_mic"))
         self.m2 = M2Link(m2_path) if m2_path else None
@@ -236,6 +244,8 @@ class AgentRuntime:
                     self.camera.renew()
                 if message.get("audio") is True and self.audio_enabled:
                     self.microphone.renew()
+                if message.get("nav") is True:
+                    self.nav_viewers_until = time.monotonic() + 1.5
             elif message.get("kind") == "command":
                 await self.command(message)
 
@@ -338,6 +348,61 @@ class AgentRuntime:
                     await asyncio.to_thread(worker.stop)
             await asyncio.sleep(0.005)
 
+    def nav_agent_packet(self) -> bytes:
+        """pi-agent's side of navigation for the map page: safety stop, lease, estop."""
+        return make_packet(
+            "agent",
+            {
+                "stamp": round(time.time(), 3),
+                "fault": self.nav.fault if self.nav else None,
+                "owned": self.nav.owned if self.nav else False,
+                "estopped": self.board.guard.estopped,
+                "relay": bool(self.nav_stream and self.nav_stream.connected),
+            },
+        )
+
+    async def _nav_channel(self, link: str, tls: ssl.SSLContext, token: str) -> None:
+        """The map page feed is optional: its failures never end the control link."""
+        while True:
+            try:
+                await self._nav_sender(link, tls, token)
+            except (OSError, ValueError, TimeoutError, WebSocketException) as error:
+                LOGGER.info("Map page channel unavailable: %s", type(error).__name__)
+            await asyncio.sleep(5)
+
+    async def _nav_sender(self, link: str, tls: ssl.SSLContext, token: str) -> None:
+        assert self.nav_stream is not None
+        cache = self.nav_stream.cache
+        base_url = str(self.config["url"]).rstrip("/")
+        agent_id = str(self.config.get("agent_id", "laosan"))
+        async with connect(
+            f"{base_url}/internal/v1/agents/{agent_id}/nav",
+            ssl=tls,
+            extra_headers={"Authorization": f"Bearer {token}", "X-Agent-Link": link},
+            subprotocols=[Subprotocol(AGENT_PROTOCOL)],
+            max_size=65536,
+            ping_interval=10,
+            ping_timeout=5,
+            close_timeout=1,
+        ) as socket:
+            seq, last_agent = -1, 0.0
+            while True:
+                if time.monotonic() > self.nav_viewers_until:
+                    seq = -1
+                    await asyncio.sleep(0.2)
+                    continue
+                packets: list[bytes] | None = None
+                if seq >= 0:
+                    seq, packets = cache.since(seq)
+                if packets is None:
+                    seq, packets = cache.snapshot()
+                if time.monotonic() - last_agent >= 1:
+                    packets.append(self.nav_agent_packet())
+                    last_agent = time.monotonic()
+                for data in packets:
+                    await asyncio.wait_for(socket.send(data), timeout=2)
+                await asyncio.sleep(0.05)
+
     async def run(self) -> None:
         tls = ssl.create_default_context(cafile=str(self.config["ca_file"]))
         token_path = Path(str(self.config["token_file"]))
@@ -349,6 +414,8 @@ class AgentRuntime:
         self.board.open()
         if self.nav and self.board.serial is not None:
             self.nav.start()
+        if self.nav_stream:
+            self.nav_stream.start()
         if self.m2:
             self.m2.open()
         try:
@@ -376,6 +443,8 @@ class AgentRuntime:
                             asyncio.create_task(self._media_sender("video", link, tls, token)),
                             asyncio.create_task(self._media_sender("audio", link, tls, token)),
                         ]
+                        if self.nav_stream:
+                            tasks.append(asyncio.create_task(self._nav_channel(link, tls, token)))
                         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                         for task in done:
                             task.result()
