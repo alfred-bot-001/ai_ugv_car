@@ -40,10 +40,10 @@ CANCEL_ENDPOINTS = (
 )
 
 
-def latched_fault(board: BoardClient) -> dict[str, Any] | None:
+def latched_fault(board: BoardClient, since: float) -> dict[str, Any] | None:
     """A failed status read is not a fault; pi-agent's own watchdogs still stop the car."""
     try:
-        return board.fault()
+        return board.fault(since)
     except BoardError:
         return None
 
@@ -161,6 +161,7 @@ class Operator:
             return result
         future = handle.get_result_async()
         started = time.monotonic()
+        started_wall = time.time()
         board = BoardClient(SOCKET)
         next_check = started
         try:
@@ -168,7 +169,7 @@ class Operator:
                 rclpy.spin_once(self.node, timeout_sec=0.05)
                 if time.monotonic() >= next_check:
                     next_check = time.monotonic() + FAULT_POLL_S
-                    fault = latched_fault(board)
+                    fault = latched_fault(board, started_wall)
                     if fault:
                         result["fault"] = fault  # stop waiting; the goal is cancelled below
                         break

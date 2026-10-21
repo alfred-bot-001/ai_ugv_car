@@ -39,19 +39,31 @@ def wrap(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
-def stalled(window: Sequence[Sample], seconds: float = STALL_BODY_SECONDS) -> bool:
-    """True when the window spans `seconds`, the wheels moved and the body did not."""
-    if len(window) < 2 or window[-1].t - window[0].t < seconds:
-        return False
+def motion(window: Sequence[Sample]) -> dict[str, float]:
+    """Wheel path length and turning against the body's net motion over the window."""
     travel = turn = 0.0
     for before, after in zip(window, window[1:], strict=False):
         travel += math.hypot(after.wheel.x - before.wheel.x, after.wheel.y - before.wheel.y)
         turn += abs(wrap(after.wheel.yaw - before.wheel.yaw))
     first, last = window[0].laser, window[-1].laser
-    moved = math.hypot(last.x - first.x, last.y - first.y)
-    turned = abs(wrap(last.yaw - first.yaw))
-    wheels_moving = travel >= WHEEL_TRAVEL_M or turn >= WHEEL_TURN_RAD
-    return wheels_moving and moved < BODY_MOVE_M and turned < BODY_TURN_RAD
+    return {
+        "wheel_travel_m": travel,
+        "wheel_turn_rad": turn,
+        "body_moved_m": math.hypot(last.x - first.x, last.y - first.y),
+        "body_turned_rad": abs(wrap(last.yaw - first.yaw)),
+        "seconds": window[-1].t - window[0].t,
+    }
+
+
+def stalled(window: Sequence[Sample], seconds: float = STALL_BODY_SECONDS) -> bool:
+    """True when the window spans `seconds`, the wheels moved and the body did not."""
+    if len(window) < 2 or window[-1].t - window[0].t < seconds:
+        return False
+    m = motion(window)
+    wheels_moving = m["wheel_travel_m"] >= WHEEL_TRAVEL_M or m["wheel_turn_rad"] >= WHEEL_TURN_RAD
+    return (
+        wheels_moving and m["body_moved_m"] < BODY_MOVE_M and m["body_turned_rad"] < BODY_TURN_RAD
+    )
 
 
 class BodyStallWatch:

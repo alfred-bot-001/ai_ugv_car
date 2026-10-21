@@ -150,3 +150,13 @@ def test_board_client_stop_reason_and_fault(monkeypatch: pytest.MonkeyPatch) -> 
     assert sent[-1] == {"op": "stop", "reason": "stall_body"}
     assert client.fault() == {"reason": "stall_body", "at": 1.0}
     assert client.fault() is None
+
+
+def test_faults_from_an_earlier_session_are_ignored() -> None:
+    from ugv_nav_tools.board_client import recent_fault
+
+    fault = {"reason": "stall_body", "at": 100.0}
+    assert recent_fault(fault, 99.0) == fault
+    assert recent_fault(fault, 101.0) is None
+    assert recent_fault(None, 0.0) is None
+    assert recent_fault({"reason": "x"}, 0.0) is None

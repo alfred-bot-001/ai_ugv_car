@@ -54,10 +54,20 @@ class BoardClient:
             payload["reason"] = reason
         self.request(payload)
 
-    def fault(self) -> dict[str, Any] | None:
-        """pi-agent's latched safety stop for the current arm session, if any."""
-        value = self.status().get("fault")
-        return value if isinstance(value, dict) else None
+    def fault(self, since: float = 0.0) -> dict[str, Any] | None:
+        """pi-agent's latched safety stop raised at or after wall time `since`, if any.
+
+        pi-agent clears a fault only when the next arm session sends its first command,
+        so a caller starting a new session must ignore faults older than its start.
+        """
+        return recent_fault(self.status().get("fault"), since)
 
     def command(self, linear: float, angular: float) -> None:
         self.request({"op": "cmd", "linear": linear, "angular": angular})
+
+
+def recent_fault(value: Any, since: float) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    at = value.get("at")
+    return value if isinstance(at, (int, float)) and at >= since else None
