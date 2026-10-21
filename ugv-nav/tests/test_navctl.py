@@ -11,7 +11,15 @@ from unittest.mock import Mock
 
 import pytest
 
-from ugv_nav_tools.navctl import NavCtl, Settings, main, map_name, mode_env, write_arm
+from ugv_nav_tools.navctl import (
+    BatteryLow,
+    NavCtl,
+    Settings,
+    main,
+    map_name,
+    mode_env,
+    write_arm,
+)
 from ugv_nav_tools.route import (
     Pose,
     goal_errors,
@@ -107,8 +115,15 @@ def make_ctl(tmp_path: Path, navigate: list[dict[str, Any]]) -> tuple[NavCtl, Fa
     settings.maps.mkdir()
     fake = FakeRos(navigate, settings.board)
     board = Mock()
-    board.status.return_value = {"ok": True, "age": 0.1, "estopped": False, "nav_owned": False}
-    return NavCtl(settings, run=fake, board=board, echo=lambda _: None), fake, board
+    board.status.return_value = {
+        "ok": True,
+        "age": 0.1,
+        "estopped": False,
+        "nav_owned": False,
+        "telemetry": {"L": 0.0, "R": 0.0, "v": 12.0},
+    }
+    ctl = NavCtl(settings, run=fake, board=board, echo=lambda _: None, sleep=lambda _: None)
+    return ctl, fake, board
 
 
 def test_goal_arms_only_while_navigating_and_always_disarms(tmp_path: Path) -> None:
@@ -176,3 +191,77 @@ def test_modes_save_and_cli(tmp_path: Path) -> None:
         main(["patrol", str(route)], ctl)
     fake.navigate.append({"ok": False})
     assert main(["goal", "0.1", "0", "0"], ctl) == 2
+
+
+def telemetry(volts: float, speed: float = 0.0) -> dict[str, Any]:
+    return {"ok": True, "telemetry": {"L": speed, "R": speed, "v": volts}}
+
+
+def test_standstill_voltage_ignores_moving_samples(tmp_path: Path) -> None:
+    ctl, _, board = make_ctl(tmp_path, [])
+    board.status.side_effect = [telemetry(9.0, speed=0.1)] * 3 + [
+        telemetry(v) for v in (11.0, 11.2, 11.1, 30.0, 11.3)
+    ]
+    assert ctl.standstill_voltage() == 11.2
+    board.status.side_effect = None
+    board.status.return_value = telemetry(11.0, speed=0.05)
+    with pytest.raises(ValueError, match="standstill"):
+        ctl.standstill_voltage()
+
+
+def test_low_battery_refuses_to_arm(tmp_path: Path) -> None:
+    ctl, fake, board = make_ctl(tmp_path, [{"ok": True}])
+    board.status.return_value = telemetry(9.9)
+    with pytest.raises(BatteryLow) as low:
+        ctl.goal(Pose(0.2, 0, 0))
+    assert not low.value.critical and fake.armed_during_navigate == []
+    assert json.loads((ctl.settings.board / "arm.json").read_text()) == {"enabled": False}
+    board.status.return_value = telemetry(9.0)
+    with pytest.raises(BatteryLow) as low:
+        ctl.goal(Pose(0.2, 0, 0), battery_gate=9.2)
+    assert low.value.critical
+
+
+def localized_with_home(ctl: NavCtl) -> None:
+    from ugv_nav_tools import places as placefile
+    from ugv_nav_tools.map_files import sha256_file
+
+    maps = ctl.settings.maps
+    (maps / "home1.pgm").write_bytes(b"P5\n1 1\n255\n\xfe")
+    marked = {
+        "version": 1,
+        "map": "home1",
+        "map_sha256": sha256_file(maps / "home1.pgm"),
+        "places": [
+            {"id": "start", "name": "出发点", "kind": "home", "pose": {"x": 0, "y": 0, "yaw": 0}}
+        ],
+    }
+    placefile.save(maps, placefile.parse(marked))
+    env = "UGV_NAV_ARGS=mapping:=false localization:=true navigation:=true map:=/maps/home1.yaml\n"
+    (ctl.settings.compose_dir / ".env").write_text(env)
+
+
+def test_patrol_goes_only_home_when_the_battery_drops(tmp_path: Path) -> None:
+    ctl, fake, board = make_ctl(tmp_path, [{"ok": True}, {"ok": True}])
+    localized_with_home(ctl)
+    board.status.side_effect = [telemetry(10.5)] * 5 + [telemetry(9.4)] * 5 + [telemetry(9.4)] * 5
+    route = parse_route({"waypoints": [{"x": 1, "y": 0}, {"x": 0, "y": 1}, {"x": 1, "y": 1}]})
+    summary = ctl.patrol(route)
+    assert summary["abort_reason"] == "battery" and summary["completed_legs"] == 1
+    assert summary["legs"][1]["home"]["ok"] and summary["legs"][1]["battery_v"] == 9.4
+    assert len(fake.armed_during_navigate) == 2  # leg 1, then only the way home
+
+    (tmp_path / "critical").mkdir()
+    ctl, fake, board = make_ctl(tmp_path / "critical", [{"ok": True}])
+    localized_with_home(ctl)
+    board.status.side_effect = [telemetry(10.5)] * 5 + [telemetry(9.0)] * 5
+    summary = ctl.patrol(route)
+    assert summary["abort_reason"] == "battery" and "home" not in summary["legs"][1]
+    assert len(fake.armed_during_navigate) == 1  # below critical: stay put
+
+
+def test_patrol_reports_a_safety_fault(tmp_path: Path) -> None:
+    fault = {"ok": False, "fault": {"reason": "stall_body", "at": 1.0}}
+    ctl, _, _ = make_ctl(tmp_path, [fault])
+    summary = ctl.patrol(parse_route({"waypoints": [{"x": 1, "y": 0}]}))
+    assert summary["abort_reason"] == "stall_body"

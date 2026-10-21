@@ -211,7 +211,7 @@ def test_navctl_marks_places_zones_and_goes_to_a_place(tmp_path: Path) -> None:
     write_map(settings.maps)
     runner = Runner()
     board = Mock()
-    board.status.return_value = {"ok": True}
+    board.status.return_value = {"ok": True, "telemetry": {"L": 0.0, "R": 0.0, "v": 12.0}}
     printed: list[str] = []
     ctl = NavCtl(settings, run=runner, board=board, echo=printed.append)
 

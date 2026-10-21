@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import re
+import statistics
 import subprocess
 import sys
 import time
@@ -31,6 +32,16 @@ ARM_SECONDS = 120.0
 NAVIGATE_TIMEOUT = 110.0
 MAP_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 ROS_ENV = 'source /opt/ugv_ws/install/setup.bash && exec "$@"'
+# S0 §3.4 battery gates on the 3S pack, judged only from standstill voltage. They
+# follow the console's estimated bars (2026-10-21, user-approved): below 2 bars
+# (10.0 V) no new task starts; below 1 bar (9.5 V) a patrol ends and only goes home;
+# below 9.2 V the car stays put. Initial values until a measured discharge curve.
+BATTERY_START_V = 10.0
+BATTERY_LEG_V = 9.5
+BATTERY_CRITICAL_V = 9.2
+BATTERY_SAMPLE_S = 3.0
+BATTERY_MIN_SAMPLES = 5
+STANDSTILL_MPS = 0.01
 ENV_MAP = re.compile(r"map:=/maps/([A-Za-z0-9_-]{1,64})\.yaml")
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
@@ -96,6 +107,15 @@ def write_arm(board: Path, *, enabled: bool, now: float, seconds: float = ARM_SE
     return session
 
 
+class BatteryLow(ValueError):
+    """Standstill voltage below a gate; `critical` means do not even go home."""
+
+    def __init__(self, volts: float, gate: float, *, critical: bool) -> None:
+        super().__init__(f"battery {volts:.2f} V below {gate:.1f} V")
+        self.volts = volts
+        self.critical = critical
+
+
 class NavCtl:
     def __init__(
         self,
@@ -104,12 +124,39 @@ class NavCtl:
         board: BoardClient | None = None,
         clock: Callable[[], float] = time.time,
         echo: Callable[[str], None] = print,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.settings = settings
         self.run = run
         self.board = board or BoardClient(settings.board / "board.sock", timeout=0.5)
         self.clock = clock
         self.echo = echo
+        self.sleep = sleep
+
+    def standstill_voltage(self) -> float:
+        """Median pack voltage while both wheels are still; motor load sags it."""
+        samples = []
+        for _ in range(int(BATTERY_SAMPLE_S / 0.2)):
+            telemetry = self.board.status().get("telemetry") or {}
+            values = [telemetry.get(k) for k in ("L", "R", "v")]
+            if all(isinstance(v, (int, float)) for v in values):
+                left, right, volts = (float(v) for v in values)  # type: ignore[arg-type]
+                if abs(left) < STANDSTILL_MPS and abs(right) < STANDSTILL_MPS and volts > 0:
+                    samples.append(volts)
+            if len(samples) >= BATTERY_MIN_SAMPLES:
+                break
+            self.sleep(0.2)
+        if len(samples) < BATTERY_MIN_SAMPLES:
+            raise ValueError("no steady standstill voltage; is the car still and online?")
+        return float(statistics.median(samples))
+
+    def check_battery(self, gate: float) -> float:
+        volts = self.standstill_voltage()
+        if volts < BATTERY_CRITICAL_V:
+            raise BatteryLow(volts, BATTERY_CRITICAL_V, critical=True)
+        if volts < gate:
+            raise BatteryLow(volts, gate, critical=False)
+        return volts
 
     def ros(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         command = ["sudo", "-n", "docker", "exec", self.settings.container]
@@ -172,10 +219,11 @@ class NavCtl:
         self.disarm()
         self.json_op("cancel")
 
-    def goal(self, pose: Pose) -> dict[str, Any]:
-        """Plan, then drive to one pose inside one arm window."""
+    def goal(self, pose: Pose, battery_gate: float = BATTERY_START_V) -> dict[str, Any]:
+        """Plan, then drive to one pose inside one arm window; low battery refuses to arm."""
         self.disarm()
         self.json_op("cancel")
+        self.check_battery(battery_gate)
         with self.armed():
             return self.json_op(
                 "navigate", str(pose.x), str(pose.y), str(pose.yaw),
@@ -243,23 +291,44 @@ class NavCtl:
         )
         return {"ok": True, "mask": mask.name, "keepout_cells": cells, "zones": len(current.zones)}
 
+    def home_pose(self) -> Pose | None:
+        """The home place of the localized map, if one is marked."""
+        try:
+            home = placefile.load(self.settings.maps, self.current_map()).home()
+        except (OSError, ValueError):
+            return None
+        return Pose(home.x, home.y, home.yaw) if home else None
+
     def patrol(self, route: Route) -> dict[str, Any]:
         """Drive the route leg by leg; the first failed leg stops the patrol."""
-        legs = []
+        legs: list[dict[str, Any]] = []
+        abort_reason = ""
         for loop, index, pose in route.legs():
             self.echo(f"巡航 第 {loop} 圈 第 {index} 点 → ({pose.x:.2f}, {pose.y:.2f})")
+            gate = BATTERY_START_V if not legs else BATTERY_LEG_V
             try:
-                result = self.goal(pose)
+                result = self.goal(pose, battery_gate=gate)
+            except BatteryLow as low:
+                result = {"ok": False, "error": str(low), "battery_v": low.volts}
+                abort_reason = "battery"
+                home = None if low.critical or not legs else self.home_pose()
+                if home is not None:
+                    try:
+                        result["home"] = self.goal(home, battery_gate=BATTERY_CRITICAL_V)
+                    except (RuntimeError, BoardError, ValueError) as error:
+                        result["home"] = {"ok": False, "error": str(error)}
             except (RuntimeError, BoardError, ValueError) as error:
                 result = {"ok": False, "error": str(error)}  # goal() already disarmed
             result |= {"loop": loop, "index": index}
             legs.append(result)
             if not result.get("ok"):
+                abort_reason = abort_reason or str(result.get("fault", {}).get("reason", "failed"))
                 break
         summary = {
             "ok": len(legs) == len(route.legs()) and all(leg.get("ok") for leg in legs),
             "completed_legs": sum(bool(leg.get("ok")) for leg in legs),
             "planned_legs": len(route.legs()),
+            "abort_reason": abort_reason or None,
             "legs": legs,
         }
         self.settings.reports.mkdir(parents=True, exist_ok=True)
