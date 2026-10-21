@@ -265,3 +265,32 @@ def test_patrol_reports_a_safety_fault(tmp_path: Path) -> None:
     ctl, _, _ = make_ctl(tmp_path, [fault])
     summary = ctl.patrol(parse_route({"waypoints": [{"x": 1, "y": 0}]}))
     assert summary["abort_reason"] == "stall_body"
+
+
+def test_probe_uses_a_short_probe_arm_and_summarizes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ugv_nav_tools import navctl as navctl_module
+
+    ctl, _, _ = make_ctl(tmp_path, [])
+    seen: dict[str, Any] = {}
+
+    def fake_request(self: Any, payload: dict[str, Any]) -> dict[str, Any]:
+        seen["arm"] = json.loads((ctl.settings.board / "arm.json").read_text())
+        seen["payload"] = payload
+        samples = [{"t": i / 10, "L": 0.0 if i < 5 else 0.04, "R": 0.06} for i in range(10)]
+        return {
+            "ok": True,
+            "frame": {"T": 13},
+            "targets": {"L": 0.04, "R": 0.06},
+            "samples": samples,
+        }
+
+    monkeypatch.setattr(navctl_module.BoardClient, "request", fake_request)
+    summary = ctl.probe("t13", 0.05, 0.1, 1.0)
+    assert seen["arm"]["mode"] == "probe" and seen["arm"]["enabled"]
+    assert seen["payload"] == {"op": "probe", "command": "t13", "a": 0.05, "b": 0.1, "seconds": 1.0}
+    assert (
+        summary["L_mean"] == 0.04 and summary["R_mean"] == 0.06 and summary["L_zero_share"] == 0.0
+    )
+    assert json.loads((ctl.settings.board / "arm.json").read_text()) == {"enabled": False}

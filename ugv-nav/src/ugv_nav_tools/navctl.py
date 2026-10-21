@@ -85,7 +85,9 @@ def mode_env(*, mapping: bool, map_file: str = "/maps/map.yaml", keepout: str = 
     return f"UGV_NAV_LAUNCH=n3_navigation\nUGV_NAV_ARGS={args}\n"
 
 
-def write_arm(board: Path, *, enabled: bool, now: float, seconds: float = ARM_SECONDS) -> str:
+def write_arm(
+    board: Path, *, enabled: bool, now: float, seconds: float = ARM_SECONDS, mode: str = ""
+) -> str:
     """Atomically write a 0600 arm file; returns the session id ('' when disarming)."""
     session = str(uuid.uuid4()) if enabled else ""
     value: dict[str, Any] = {"enabled": False}
@@ -99,6 +101,8 @@ def write_arm(board: Path, *, enabled: bool, now: float, seconds: float = ARM_SE
             "calibrated": True,
             "units_verified": True,
         }
+        if mode:
+            value["mode"] = mode
     temporary = board / ".arm.json.tmp"
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as handle:
@@ -291,6 +295,22 @@ class NavCtl:
         )
         return {"ok": True, "mask": mask.name, "keepout_cells": cells, "zones": len(current.zones)}
 
+    def probe(self, command: str, a: float, b: float, seconds: float) -> dict[str, Any]:
+        """One bounded factory-command step with encoder traces (moves the car briefly)."""
+        self.disarm()
+        self.check_battery(BATTERY_START_V)
+        write_arm(
+            self.settings.board, enabled=True, now=self.clock(), seconds=seconds + 5, mode="probe"
+        )
+        try:
+            client = BoardClient(self.settings.board / "board.sock", timeout=seconds + 3)
+            reply = client.request(
+                {"op": "probe", "command": command, "a": a, "b": b, "seconds": seconds}
+            )
+        finally:
+            self.disarm()
+        return summarize_probe(reply)
+
     def home_pose(self) -> Pose | None:
         """The home place of the localized map, if one is marked."""
         try:
@@ -354,6 +374,11 @@ def parser() -> argparse.ArgumentParser:
     patrol.add_argument("route", type=Path)
     patrol.add_argument("--loops", type=int)
     sub.add_parser("goto", help="导航到当前地图上的地点（会运动）").add_argument("place")
+    probe = sub.add_parser("probe", help="厂家指令单步运动测试，记录左右轮速（会运动）")
+    probe.add_argument("command", choices=("t13", "t1"))
+    probe.add_argument("a", type=float, help="T13 的 X（m/s）或 T1 的 L")
+    probe.add_argument("b", type=float, help="T13 的 Z（rad/s）或 T1 的 R")
+    probe.add_argument("--seconds", type=float, default=2.0)
 
     place = sub.add_parser("place", help="标注房间、地点和禁行区（不会运动）")
     place.add_argument("map", type=map_name)
@@ -380,6 +405,29 @@ def parser() -> argparse.ArgumentParser:
     actions.add_parser("rm", help="删除房间、地点或禁行区").add_argument("id")
     actions.add_parser("apply-zones", help="由禁行区生成 Nav2 掩码")
     return root
+
+
+def summarize_probe(reply: dict[str, Any]) -> dict[str, Any]:
+    """Mean and range of each side over the second half of the step."""
+    samples = reply.get("samples") or []
+    tail = [s for s in samples if s["t"] >= (samples[-1]["t"] / 2 if samples else 0)]
+    summary: dict[str, Any] = {
+        "ok": reply.get("ok"),
+        "error": reply.get("error"),
+        "frame": reply.get("frame"),
+        "targets": reply.get("targets"),
+        "samples": len(samples),
+    }
+    for side in ("L", "R"):
+        values = [float(s[side]) for s in tail]
+        if values:
+            summary[f"{side}_mean"] = round(sum(values) / len(values), 4)
+            summary[f"{side}_range"] = [round(min(values), 4), round(max(values), 4)]
+            summary[f"{side}_zero_share"] = round(
+                sum(abs(v) < 0.005 for v in values) / len(values), 2
+            )
+    summary["odometry"] = reply.get("odometry")
+    return summary
 
 
 def vertex(text: str) -> list[float]:
@@ -455,6 +503,8 @@ def main(argv: Sequence[str] | None = None, ctl: NavCtl | None = None) -> int:
         output = ctl.goal(Pose(args.x, args.y, args.yaw))
     elif args.op == "goto":
         output = ctl.goto(args.place)
+    elif args.op == "probe":
+        output = ctl.probe(args.command, args.a, args.b, args.seconds)
     elif args.op == "place":
         output = place_command(ctl, args)
     else:

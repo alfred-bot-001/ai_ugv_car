@@ -48,7 +48,7 @@ provides-extras = ["speech"]
 
 [[package]]
 name = "ai-tv-pet-pi-agent"
-version = "0.4.3"
+version = "0.4.4"
 source = { editable = "pi-agent" }
 dependencies = [
     { name = "httpx" },
@@ -67,7 +67,7 @@ requires-dist = [
 
 [[package]]
 name = "ai-ugv-car-nav-tools"
-version = "0.3.7"
+version = "0.3.8"
 source = { editable = "ugv-nav" }
 
 [[package]]

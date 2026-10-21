@@ -355,3 +355,42 @@ def test_container_safety_stop_revokes_the_arm_session(rig: tuple[NavBridge, Moc
     assert nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0})["ok"]
     assert nav.dispatch({"op": "stop"}) == {"ok": True}
     assert nav.fault is None
+
+
+def test_probe_holds_one_factory_command_and_always_stops(rig: tuple[NavBridge, Mock]) -> None:
+    nav, uart = rig
+    request = {"op": "probe", "command": "t13", "a": 0.05, "b": 0.3, "seconds": 0.3}
+    write_arm(nav.root)  # a normal arm is not enough
+    with pytest.raises(ValueError, match="probe-mode"):
+        nav.dispatch(request)
+    write_arm(nav.root, id="probe-1", mode="probe", expires_at=time.time() + 8)
+    with pytest.raises(ValueError, match="only allows probe"):
+        nav.dispatch({"op": "cmd", "linear": 0.05, "angular": 0})
+    nav.board.guard.heartbeat()
+    uart.write.reset_mock()
+    result = nav.dispatch(request)
+    assert result["ok"] and result["frame"] == {"T": 13, "X": 0.05, "Z": 0.3}
+    assert result["targets"]["L"] < 0.05 < result["targets"]["R"]
+    sent = [json.loads(c.args[0]) for c in uart.write.call_args_list]
+    last_t13 = max(i for i, c in enumerate(sent) if c.get("T") == 13)
+    assert sum(c.get("T") == 13 for c in sent) >= 2
+    assert {"T": 1, "L": 0.0, "R": 0.0} in sent[last_t13:]
+    assert not nav.owned and result["samples"]
+    with pytest.raises(ValueError, match="T13 limits"):
+        nav.dispatch(request | {"a": 0.2})
+    with pytest.raises(ValueError, match="T1 limits"):
+        nav.dispatch(request | {"command": "t1", "a": 0.05, "b": -0.2})
+    with pytest.raises(ValidationError):
+        nav.dispatch(request | {"seconds": 3})
+    write_arm(nav.root, id="probe-2", mode="probe", expires_at=time.time() + 30)
+    with pytest.raises(ValueError, match="too long"):
+        nav.dispatch(request)
+
+
+def test_probe_stops_on_emergency_stop(rig: tuple[NavBridge, Mock]) -> None:
+    nav, _ = rig
+    write_arm(nav.root, id="probe-1", mode="probe", expires_at=time.time() + 8)
+    nav.board.guard.heartbeat()
+    nav.board.stop(emergency=True)
+    with pytest.raises(ValueError, match="estop"):
+        nav.dispatch({"op": "probe", "command": "t1", "a": 0.05, "b": 0.05, "seconds": 0.2})

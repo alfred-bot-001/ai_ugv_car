@@ -44,6 +44,15 @@ STALL_TARGET_MIN = 0.04  # m/s commanded on the wheel
 STALL_MEASURED_MAX = 0.01  # m/s measured: the wheel is not turning
 STALL_WINDUP_FRACTION = 0.9  # the PI integral has used up its correction budget
 STALL_WHEEL_SECONDS = 1.5
+# Motion probe (2026-10-21): bounded factory-command steps to compare the firmware's own
+# T13 / T1 speed loop with this bridge's T1 + PI, with per-side encoder traces.
+PROBE_ARM_MAX_SECONDS = 10.0
+PROBE_MAX_SECONDS = 2.0
+PROBE_MAX_LINEAR = 0.10  # m/s for T13 X
+PROBE_MAX_ANGULAR = 0.6  # rad/s for T13 Z
+PROBE_MAX_WHEEL = 0.10  # T1 L/R magnitude (m/s on current factory firmware)
+PROBE_PERIOD = 0.05
+FIRMWARE_TRACK_WIDTH_M = 0.172  # what the factory firmware uses inside T13
 
 
 class StatusRequest(BaseModel):
@@ -66,7 +75,34 @@ class CmdRequest(BaseModel):
     source: Literal["nav", "calibration"] = "nav"
 
 
-AnyRequest = StatusRequest | StopRequest | CmdRequest
+class ProbeRequest(BaseModel):
+    """One factory motion command held for a few seconds; needs a probe-mode arm."""
+
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["probe"]
+    command: Literal["t13", "t1"]
+    a: float = Field(allow_inf_nan=False)  # T13 X (m/s) or T1 L
+    b: float = Field(allow_inf_nan=False)  # T13 Z (rad/s) or T1 R
+    seconds: float = Field(gt=0, le=PROBE_MAX_SECONDS, allow_inf_nan=False)
+
+    def frame(self) -> dict[str, Any]:
+        if self.command == "t13":
+            if abs(self.a) > PROBE_MAX_LINEAR or abs(self.b) > PROBE_MAX_ANGULAR:
+                raise ValueError("probe T13 limits: |X| <= 0.10 m/s, |Z| <= 0.6 rad/s")
+            return {"T": 13, "X": self.a, "Z": self.b}
+        if abs(self.a) > PROBE_MAX_WHEEL or abs(self.b) > PROBE_MAX_WHEEL:
+            raise ValueError("probe T1 limits: |L|, |R| <= 0.10")
+        return {"T": 1, "L": self.a, "R": self.b}
+
+    def targets(self) -> tuple[float, float]:
+        """Per-side speeds the factory firmware aims for (T1 L/R taken as m/s)."""
+        if self.command == "t13":
+            half = self.b * FIRMWARE_TRACK_WIDTH_M / 2
+            return self.a - half, self.a + half
+        return self.a, self.b
+
+
+AnyRequest = StatusRequest | StopRequest | CmdRequest | ProbeRequest
 REQUEST: TypeAdapter[AnyRequest] = TypeAdapter(Annotated[AnyRequest, Field(discriminator="op")])
 
 
@@ -77,6 +113,7 @@ class Arm:
     session_id: str
     calibration: bool
     remaining: float
+    probe: bool = False
 
 
 def read_arm(path: Path, now: float) -> Arm:
@@ -95,6 +132,9 @@ def read_arm(path: Path, now: float) -> Arm:
     if value.get("units_verified") is not True:
         raise ValueError("wheel units are not verified")
     calibration = value.get("mode") == "calibration"
+    probe = value.get("mode") == "probe"
+    if probe and remaining > PROBE_ARM_MAX_SECONDS:
+        raise ValueError("probe arm too long")
     # Before calibration only a few-second straight-line calibration window is allowed.
     if value.get("calibrated") is not True and not (
         calibration and remaining <= CALIBRATION_ARM_MAX_SECONDS
@@ -103,7 +143,7 @@ def read_arm(path: Path, now: float) -> Arm:
     session_id = value.get("id")
     if not isinstance(session_id, str) or not session_id:
         raise ValueError("missing arm session id")
-    return Arm(session_id, calibration, remaining)
+    return Arm(session_id, calibration, remaining, probe)
 
 
 def wheel_targets(linear: float, angular: float) -> tuple[float, float]:
@@ -221,6 +261,8 @@ class NavBridge:
         request = REQUEST.validate_python(raw)
         if isinstance(request, StatusRequest):
             return self._status()
+        if isinstance(request, ProbeRequest):
+            return self._probe(request)
         if isinstance(request, StopRequest):
             self.stop_owned()
             if request.reason:
@@ -253,6 +295,8 @@ class NavBridge:
             self.stop_owned()
             return {"ok": True, "stopped": True}
         arm = read_arm(self.root / "arm.json", self.wall())
+        if arm.probe:
+            raise ValueError("a probe arm only allows probe requests")
         if arm.calibration and (
             request.source != "calibration"
             or request.linear > CALIBRATION_MAX_LINEAR
@@ -315,6 +359,74 @@ class NavBridge:
             )
             self.last_command_at = self.clock()
         return {"ok": True}
+
+    def _probe(self, request: ProbeRequest) -> dict[str, Any]:
+        """Hold one factory command for request.seconds and trace both encoders.
+
+        Same gates as navigation (qualification, health, estop, lease, fresh telemetry);
+        the Board watchdog keeps its runaway and stale-telemetry stops because the lock
+        is only held per step. Always ends with the stop command.
+        """
+        frame = request.frame()
+        arm = read_arm(self.root / "arm.json", self.wall())
+        if not arm.probe:
+            raise ValueError("probe needs a probe-mode arm")
+        board = self.board
+        with board.lock:
+            board.load_evidence()
+            if not board.guard.wheels_verified or board.guard.estopped or board.health_error():
+                raise ValueError("existing Board qualification/health/estop rejects motion")
+            if self.owned or self.lease:
+                raise ValueError("navigation already owns the chassis")
+            started = self.clock()
+            if started - board.received_at > TELEMETRY_MAX_AGE:
+                raise ValueError("stale telemetry")
+            self.arm_id = arm.session_id
+            self.session_deadline = started + min(arm.remaining, request.seconds + 1)
+            self.lease = board.guard.acquire()
+            board.guard.press_deadline = board.guard.lease_deadline = self.session_deadline
+            board.observe_until = started + request.seconds + 1
+            start_odl = board.telemetry.get("odl")
+            start_odr = board.telemetry.get("odr")
+        samples: list[dict[str, float]] = []
+        last_seen = 0.0
+        reason = ""
+        try:
+            while self.clock() - started < request.seconds:
+                with board.lock:
+                    if not self.owned or board.guard.estopped:
+                        reason = "lease revoked or emergency stop"
+                        break
+                    if board.health_error():
+                        reason = board.health_error()
+                        break
+                    board.guard.heartbeat()
+                    board.write(frame)
+                    self.last_command_at = self.clock()
+                    if board.received_at != last_seen:
+                        last_seen = board.received_at
+                        samples.append(
+                            {
+                                "t": round(board.received_at - started, 3),
+                                "L": float(board.telemetry["L"]),
+                                "R": float(board.telemetry["R"]),
+                            }
+                        )
+                time.sleep(PROBE_PERIOD)
+        finally:
+            self.stop_owned()
+            self.session_deadline = 0.0
+        with board.lock:
+            end = {"odl": board.telemetry.get("odl"), "odr": board.telemetry.get("odr")}
+        targets = request.targets()
+        return {
+            "ok": not reason,
+            "error": reason or None,
+            "frame": frame,
+            "targets": {"L": targets[0], "R": targets[1]},
+            "samples": samples,
+            "odometry": {"start": {"odl": start_odl, "odr": start_odr}, "end": end},
+        }
 
     def watchdog_tick(self) -> None:
         """Stop when the arm lapses or the container stops streaming commands."""
