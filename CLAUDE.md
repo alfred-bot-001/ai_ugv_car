@@ -2,6 +2,10 @@
 
 小车「老三」（Waveshare UGV Rover 六轮）的操纵与管理项目。进度看 [TODO.md](TODO.md)，架构看 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，导航看 [docs/ros-navigation-design.md](docs/ros-navigation-design.md)，部署细节看 [docs/control-console-deployment.md](docs/control-console-deployment.md)。
 
+## 流程规范
+
+- 并行会话分工、worktree 与分支、只从已推送提交部署、主干顶端发布、「开发完毕」确认：一律按全局 `~/.claude/development-practices.md` 执行（所有项目通用，Mini 上的会话同样适用）。本文只补充本项目的组件、命令和地址，不放宽那里的规则。
+
 ## 沟通
 
 - 面向用户的回答、计划、总结一律用简体中文；代码、命令、标识符保持原样。
