@@ -16,8 +16,8 @@ const logKeys=new Set();
 // Controls: the active map tool, a press-and-drag arrow, the target awaiting confirmation.
 let tool='view',arrow=null,pendingTarget=null,maps=[],mapsLoaded=false,mapsLoading=false;
 let jobSeen=false,lastJobKey='',overwriteName='',dialogPending=null;
-// Wheel joystick (same lease/challenge protocol as the dashboard).
-let controlSocket=null,press=null,pressGeneration=0,controlSequence=0,challenge='',lastChallenge='',lease='';
+// Wheel joystick (same held-state relay as the dashboard: the knob stays put).
+let controlSocket=null,press=null,dragging=false,pressGeneration=0,controlSequence=0,lease='',leasing=null,streamTimer=null,lastSend=0;
 const TOOL_HINT={view:'拖动平移，滚轮或双指缩放',pose:'在地图上按住老三所在的位置，朝车头方向拖出箭头再松开',goal:'在地图上按住目标点，拖出到达后的朝向再松开（直接点一下也可以）'};
 
 function toast(message){$('#toast').textContent=message;$('#toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').hidden=true,6000);}
@@ -312,31 +312,41 @@ function renderMapList(){
 $('#refresh-maps').onclick=()=>loadMaps();
 $('#map-select').onchange=()=>renderControls();
 
-// ---- wheel joystick
+// ---- wheel joystick. The knob stays where it is put and the car keeps driving: the
+// page relays the held state ten times a second (no per-command handshake). Stop by
+// dragging the knob back to the middle, tapping the middle, 取消导航 or the emergency
+// stop; hiding the page or losing the link also stops.
+const STREAM_MS=100,DEAD_ZONE=.12;
 // The speed chosen with the dashboard slider (same 0.07..0.18 band as tvpet_pi.protocol).
 function wheelSpeed(){try{const speed=Number(localStorage.getItem('wheels-speed'));return Number.isFinite(speed)&&speed>0?Math.min(.18,Math.max(.07,speed)):.1;}catch{return .1;}}
 function connectControl(){
   if(stopped||controlSocket)return;
   const ws=socket('control');controlSocket=ws;
-  ws.onmessage=e=>{const data=JSON.parse(e.data);if(data.error){toast(data.error);releaseStick();return;}if(data.challenge&&data.lease===lease){challenge=data.challenge;if(press&&lease&&challenge!==lastChallenge){lastChallenge=challenge;ws.send(JSON.stringify({target:'wheels',x:press.x,y:press.y,lease,challenge,sequence:++controlSequence,speed:wheelSpeed()}));}}};
+  ws.onmessage=e=>{const data=JSON.parse(e.data);if(data.code==='lease'){lease='';if(press)acquireLease();return;}if(data.error){toast(data.error);releaseStick();return;}if(data.online===false&&press)releaseStick();};
   ws.onclose=()=>{if(controlSocket===ws)controlSocket=null;releaseStick();if(!stopped)setTimeout(connectControl,1500);};
 }
-function positionStick(element,event){const rect=element.getBoundingClientRect(),radius=rect.width/2-30;let x=(event.clientX-rect.left-rect.width/2)/radius,y=-(event.clientY-rect.top-rect.height/2)/radius;const scale=Math.max(1,Math.hypot(x,y));x/=scale;y/=scale;press.x=Math.abs(x)<.1?0:x;press.y=Math.abs(y)<.1?0:y;element.querySelector('.stick-knob').style.transform=`translate(${x*radius}px,${-y*radius}px)`;}
-async function beginStick(element,event){
+function sendStick(){if(!press||!lease||!controlSocket||controlSocket.readyState!==WebSocket.OPEN)return;lastSend=performance.now();controlSocket.send(JSON.stringify({target:'wheels',x:press.x,y:press.y,lease,sequence:++controlSequence,speed:wheelSpeed()}));}
+function sendSoon(){if(lease&&performance.now()-lastSend>40)sendStick();}
+function startStream(){clearInterval(streamTimer);streamTimer=setInterval(sendStick,STREAM_MS);sendStick();}
+function acquireLease(){if(leasing)return leasing;const generation=pressGeneration;leasing=(async()=>{try{const result=await(await api('control/lease')).json();if(generation!==pressGeneration||!press){await api('control/stop').catch(()=>{});return;}lease=result.lease;startStream();}catch(error){toast(error.message);releaseStick();}finally{leasing=null;}})();return leasing;}
+function knob(x,y){const element=$('#stick-wheels'),radius=element.getBoundingClientRect().width/2-30;element.querySelector('.stick-knob').style.transform=`translate(${x*radius}px,${-y*radius}px)`;element.classList.toggle('engaged',!!(x||y));}
+function positionStick(element,event){const rect=element.getBoundingClientRect(),radius=rect.width/2-30;let x=(event.clientX-rect.left-rect.width/2)/radius,y=-(event.clientY-rect.top-rect.height/2)/radius;const scale=Math.max(1,Math.hypot(x,y));x/=scale;y/=scale;if(Math.hypot(x,y)<DEAD_ZONE){x=0;y=0;}press={x,y};knob(x,y);sendSoon();}
+function beginStick(element,event){
   if(element.getAttribute('aria-disabled')==='true'){toast($('#feedback-wheels').textContent||'现在不能遥控');return;}
-  if(press)return;event.preventDefault();const generation=++pressGeneration;press={x:0,y:0};
-  if(event.pointerId!=null){element.setPointerCapture(event.pointerId);positionStick(element,event);}
-  try{const result=await(await api('control/lease')).json();if(generation!==pressGeneration||!press){await api('control/stop');return;}lease=result.lease;lastChallenge='';}
-  catch(error){toast(error.message);releaseStick();}
+  event.preventDefault();if(!press)pressGeneration++;dragging=true;
+  if(event.pointerId!=null){element.setPointerCapture(event.pointerId);positionStick(element,event);}else if(!press)press={x:0,y:0};
+  if(!lease)acquireLease();
 }
-function releaseStick(){const had=!!press||!!lease;pressGeneration++;press=null;lease='';$('#stick-wheels .stick-knob').style.transform='translate(0,0)';if(had&&csrf)api('control/stop').catch(()=>{});}
+function endDrag(){if(!dragging)return;dragging=false;if(press&&!press.x&&!press.y)releaseStick();}
+function releaseStick(){const had=!!press||!!lease;pressGeneration++;clearInterval(streamTimer);streamTimer=null;if(press&&lease){press={x:0,y:0};sendStick();}press=null;dragging=false;lease='';knob(0,0);if(had&&csrf)api('control/stop').catch(()=>{});}
+const ARROWS={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,1],ArrowDown:[0,-1]};
 {
   const element=$('#stick-wheels');
   element.addEventListener('pointerdown',e=>beginStick(element,e));
-  element.addEventListener('pointermove',e=>{if(press)positionStick(element,e);});
-  for(const kind of ['pointerup','pointercancel','lostpointercapture'])element.addEventListener(kind,releaseStick);
-  element.addEventListener('keydown',async e=>{if(!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)||e.repeat)return;await beginStick(element,e);if(press){press.x=e.key==='ArrowLeft'?-1:e.key==='ArrowRight'?1:0;press.y=e.key==='ArrowUp'?1:e.key==='ArrowDown'?-1:0;}});
-  element.addEventListener('keyup',releaseStick);element.addEventListener('blur',releaseStick);
+  element.addEventListener('pointermove',e=>{if(dragging&&press)positionStick(element,e);});
+  for(const kind of ['pointerup','pointercancel','lostpointercapture'])element.addEventListener(kind,endDrag);
+  element.addEventListener('keydown',e=>{if(!ARROWS[e.key]||e.repeat)return;beginStick(element,e);if(press){const [x,y]=ARROWS[e.key];press={x,y};knob(x,y);dragging=false;sendSoon();}});
+  element.addEventListener('keyup',e=>{if(ARROWS[e.key])releaseStick();});
 }
 async function poll(){
   if(stopped)return;

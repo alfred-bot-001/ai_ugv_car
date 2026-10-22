@@ -1,4 +1,5 @@
-// Joystick speed slider: the wheels message carries the chosen T1 ceiling, the gimbal never does.
+// Joysticks: the wheels message carries the chosen T1 ceiling, the gimbal never does;
+// the knob stays put and the held states are relayed on a timer (no handshake).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -17,17 +18,30 @@ assert.equal(clampSpeed('0.15'), 0.15);
 assert.equal(clampSpeed(0.3), 0.18);
 assert.equal(clampSpeed(0.01), 0.07);
 
-const wheels = stickMessage({target: 'wheels', x: 0.5, y: -1}, 'lease-x', 'chal-y', 7, 0.15);
+const wheels = stickMessage('wheels', {x: 0.5, y: -1}, 'lease-x', 7, 0.15);
 // JSON compare: objects built inside the vm context have a different prototype.
-assert.equal(JSON.stringify(wheels), JSON.stringify({target: 'wheels', x: 0.5, y: -1, lease: 'lease-x', challenge: 'chal-y', sequence: 7, speed: 0.15}));
+assert.equal(JSON.stringify(wheels), JSON.stringify({target: 'wheels', x: 0.5, y: -1, lease: 'lease-x', sequence: 7, speed: 0.15}));
 
-const gimbal = stickMessage({target: 'gimbal', x: 0, y: 1}, 'lease-x', 'chal-y', 8, 0.15);
+const gimbal = stickMessage('gimbal', {x: 0, y: 1}, 'lease-x', 8, 0.15);
 assert.equal('speed' in gimbal, false);
+assert.equal('challenge' in gimbal, false);
 assert.equal(gimbal.sequence, 8);
 
-// No auto-release timer: holding the stick drives until the pointer is released.
-assert.equal(source.includes('setTimeout(releaseStick'), false);
-const html = fs.readFileSync(new URL('../src/tvpet_console/web/dashboard.html', import.meta.url), 'utf8');
-assert.equal(html.includes('每次最长 2 秒'), false);
+// No auto-release timer, no per-command handshake: the held states go out on a timer
+// and pointer release leaves the knob where it is (only a centred knob stops).
+for (const page of ['app.js', 'navigation.js']) {
+  const text = fs.readFileSync(new URL('../src/tvpet_console/web/' + page, import.meta.url), 'utf8');
+  assert.equal(text.includes('setTimeout(releaseStick'), false, page);
+  assert.equal(text.includes('challenge'), false, page);
+  assert.ok(text.includes('setInterval(sendStick'), page);
+  assert.ok(text.includes("data.code==='lease'"), page);
+  assert.ok(text.includes('endDrag'), page);
+  assert.equal(text.includes("element.addEventListener(kind,releaseStick)"), false, page);
+}
+for (const page of ['dashboard.html', 'navigation.html']) {
+  const html = fs.readFileSync(new URL('../src/tvpet_console/web/' + page, import.meta.url), 'utf8');
+  assert.equal(html.includes('每次最长 2 秒'), false, page);
+  assert.equal(html.includes('松手即停'), false, page);
+}
 
-console.log('speed frontend ok');
+console.log('joystick frontend ok');

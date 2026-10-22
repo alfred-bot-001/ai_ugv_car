@@ -283,10 +283,10 @@ def test_joystick_stays_at_010_while_nav_may_reach_018(rig: tuple[NavBridge, Moc
     guard = nav.board.guard
     guard.heartbeat()
     lease = nav.board.acquire()
-    stick = Stick(target="wheels", x=0, y=1, lease=lease, challenge=guard.challenge(), sequence=1)
+    stick = Stick(target="wheels", x=0, y=1, lease=lease, sequence=1)
     nav.board.move(stick)
     assert wheel_writes(uart)[-1] == {"T": 1, "L": 0.1, "R": 0.1}
-    stick = Stick(target="wheels", x=0, y=1, lease=lease, challenge=guard.challenge(), sequence=2)
+    stick = Stick(target="wheels", x=0, y=1, lease=lease, sequence=2)
     nav.board.move(stick, maximum=PWM_LIMIT)
     assert wheel_writes(uart)[-1] == {"T": 1, "L": PWM_LIMIT, "R": PWM_LIMIT}
     nav.board.stop()
@@ -300,13 +300,13 @@ def test_joystick_speed_field_raises_the_wheel_ceiling_up_to_018(
     guard.heartbeat()
     lease = nav.board.acquire()
     common = {"target": "wheels", "lease": lease}
-    nav.board.move(Stick(x=0, y=1, challenge=guard.challenge(), sequence=1, speed=0.18, **common))
+    nav.board.move(Stick(x=0, y=1, sequence=1, speed=0.18, **common))
     assert wheel_writes(uart)[-1] == {"T": 1, "L": 0.18, "R": 0.18}
-    nav.board.move(Stick(x=0, y=-1, challenge=guard.challenge(), sequence=2, speed=0.07, **common))
+    nav.board.move(Stick(x=0, y=-1, sequence=2, speed=0.07, **common))
     assert wheel_writes(uart)[-1] == {"T": 1, "L": -0.07, "R": -0.07}
     # The explicit nav ceiling still wins over the stick field.
     nav.board.move(
-        Stick(x=0, y=1, challenge=guard.challenge(), sequence=3, speed=0.07, **common),
+        Stick(x=0, y=1, sequence=3, speed=0.07, **common),
         maximum=PWM_LIMIT,
     )
     assert wheel_writes(uart)[-1] == {"T": 1, "L": PWM_LIMIT, "R": PWM_LIMIT}
@@ -323,12 +323,14 @@ def test_runaway_threshold_sits_above_nav_ceiling(rig: tuple[NavBridge, Mock]) -
     assert "速度" in board.health_error()
 
 
-def test_board_health_allows_half_degree_servo_settling(rig: tuple[NavBridge, Mock]) -> None:
+def test_board_health_allows_two_degrees_of_servo_overshoot(rig: tuple[NavBridge, Mock]) -> None:
     board = rig[0].board
-    board.telemetry = {"L": 0, "R": 0, "v": 12.0, "pan": 45.19, "tilt": -15.3}
+    board.telemetry = {"L": 0, "R": 0, "v": 12.0, "pan": 46.9, "tilt": -16.9}
     board.received_at = time.monotonic()
     assert board.health_error() == ""
-    board.telemetry["pan"] = 45.6
+    board.telemetry["pan"] = 47.1
+    assert "云台" in board.health_error()
+    board.telemetry.update(pan=0, tilt=47.1)
     assert "云台" in board.health_error()
 
 

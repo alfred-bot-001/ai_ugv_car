@@ -333,8 +333,8 @@ class NavBridge:
                 self.lease = board.guard.acquire()  # rejects an existing manual lease
                 self.sequence = 0
                 self.stall_monitor.reset()
-                # The bounded operator session replaces the 2 s joystick press budget.
-                # Fresh one-use challenges, heartbeat and the Board watchdog still apply.
+                # The bounded operator session is the only time budget; the heartbeat
+                # and the Board watchdog still apply.
                 board.guard.press_deadline = self.session_deadline
                 board.guard.lease_deadline = self.session_deadline
             self.sequence += 1
@@ -353,7 +353,6 @@ class NavBridge:
                     x=x,
                     y=y,
                     lease=self.lease,
-                    challenge=board.guard.challenge(),
                     sequence=self.sequence,
                 ),
             )

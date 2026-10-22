@@ -6,6 +6,7 @@ import os
 import struct
 import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -138,20 +139,27 @@ def test_uart_watchdog_and_evidence(tmp_path: Path, monkeypatch) -> None:
         board.received_at = time.monotonic() - 0.8
         lease = board.acquire()
         assert time.monotonic() - board.received_at < 0.1
-        board.move(
-            Stick(target="wheels", x=0, y=0.5, lease=lease, challenge=guard.challenge(), sequence=1)
-        )
-        commands = [json.loads(call.args[0]) for call in uart.write.call_args_list]
-        assert any(c.get("T") == 1 and c.get("L") == 0.05 for c in commands)
-        guard.motion_deadline = time.monotonic() - 1
-        time.sleep(0.07)
-        assert not guard.lease
-        assert json.loads(uart.write.call_args_list[-1].args[0])["T"] in (1, 135, 130, 4)
+        board.move(Stick(target="wheels", x=0, y=0.5, lease=lease, sequence=1))
+
+        def writes() -> list[dict[str, Any]]:
+            return [json.loads(call.args[0]) for call in uart.write.call_args_list]
+
+        assert any(c.get("T") == 1 and c.get("L") == 0.05 for c in writes())
         guard.heartbeat()
-        lease = board.acquire()
-        board.move(
-            Stick(target="gimbal", x=1, y=0, lease=lease, challenge=guard.challenge(), sequence=1)
-        )
+        time.sleep(0.25)  # the watchdog re-drives the held state under the 300 ms timeout
+        assert sum(1 for c in writes() if c.get("T") == 1 and c.get("L") == 0.05) >= 2
+        guard.heartbeat()
+        time.sleep(0.5)  # no new state: motion stops, the lease stays for the next state
+        assert guard.lease == lease
+        wheel = [c for c in writes() if c.get("T") == 1]
+        assert wheel[-1] == {"T": 1, "L": 0.0, "R": 0.0}
+        assert any(c.get("T") == 135 for c in writes())
+        guard.heartbeat()
+        board.move(Stick(target="gimbal", x=1, y=0, lease=lease, sequence=2))
+        time.sleep(0.15)  # integrated at 20 Hz: pan grows, tilt stays, limits hold
+        gimbal = [c for c in writes() if c.get("T") == 133]
+        assert gimbal and gimbal[-1]["X"] > gimbal[0]["X"] >= 0 and gimbal[-1]["Y"] == 0
+        assert gimbal[-1]["SPD"] == 0 and all(c["X"] <= 45 for c in gimbal)
         board.stop(emergency=True)
         assert guard.estopped
         evidence.write_text("{}")

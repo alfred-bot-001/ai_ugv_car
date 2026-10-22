@@ -13,11 +13,24 @@ from typing import Any
 import serial
 
 from .protocol import Stick
-from .safety import Guard, differential
+from .safety import Guard, circle, differential
 
 # Measured wheel speed (m/s) above this is a runaway: emergency stop under a lease.
 # Raised from 0.2 on 2026-10-14 for 0.10 m/s navigation with closed-loop overshoot.
 RUNAWAY_SPEED = 0.3
+# The watchdog re-sends a held wheel state this often, under the firmware's 300 ms
+# T136 stop, so motion no longer depends on every web packet arriving in time.
+WHEEL_RESEND = 0.1
+# Gimbal knob: full deflection turns at this many degrees per second, integrated at
+# GIMBAL_PERIOD inside the +-45 / -15..45 limits of the 2026-10-02 acceptance.
+# 2026-10-22, user decision: the old 2 deg per 100 ms step and T133 SPD=10 (about
+# 1 deg/s at the servo) made the camera crawl; Waveshare's own page sends SPD 0.
+GIMBAL_RATE = 60.0
+GIMBAL_PERIOD = 0.05
+GIMBAL_SPD = 0
+GIMBAL_ACC = 128
+PAN_LIMIT = 45.0
+TILT_MIN, TILT_MAX = -15.0, 45.0
 
 
 def parse_telemetry(line: bytes) -> dict[str, Any] | None:
@@ -65,7 +78,14 @@ class Board:
         self.evidence_path = evidence_path
         self.evidence: dict[str, Any] = {}
         self.gate_reason = "缺少有效的实机验收记录"
-        self.last_motion = 0.0
+        # Held-state driving: the wheel ceiling of the last wheels command, when the
+        # wheels were last written, when the gimbal was last integrated, and whether
+        # a stop still has to be written once the held states go stale.
+        self.hold_maximum = RUNAWAY_SPEED
+        self.last_wheel_write = 0.0
+        self.last_gimbal_at = 0.0
+        self.last_gimbal_write = 0.0
+        self.driving = False
 
     def load_evidence(self) -> None:
         self.guard.wheels_verified = self.guard.gimbal_verified = False
@@ -144,12 +164,17 @@ class Board:
     def stop(self, *, emergency: bool = False) -> None:
         with self.lock:
             self.guard.release(emergency=emergency)
-            self.write({"T": 1, "L": 0.0, "R": 0.0})
-            if self.guard.gimbal_verified:
-                self.write({"T": 135})
+            self._settle()
+
+    def _settle(self) -> None:
+        """Write the stop commands once; the lease (if any) is untouched."""
+        self.driving = False
+        self.write({"T": 1, "L": 0.0, "R": 0.0})
+        if self.guard.gimbal_verified:
+            self.write({"T": 135})
 
     def move(self, stick: Stick, maximum: float | None = None) -> None:
-        """T1 ceiling: the stick's own speed (web slider, at most 0.18) unless nav.py overrides."""
+        """Hold a stick state and drive it now; the watchdog keeps driving it (0.5 s)."""
         if maximum is None:
             maximum = stick.speed
         with self.lock:
@@ -158,18 +183,55 @@ class Board:
             if health_error:
                 self.stop()
                 raise ValueError(health_error)
-            x, y = self.guard.accept(stick)
+            if self.guard.accept(stick) is None:
+                return  # an older state arrived late; the newer one is already held
             if stick.target == "wheels":
-                left, right = differential(x, y, min(maximum, RUNAWAY_SPEED))
-                self.write({"T": 1, "L": left, "R": right})
+                self.hold_maximum = min(maximum, RUNAWAY_SPEED)
+                self._drive_wheels(stick)
             else:
-                # Relative direction, capped to 2 deg per 100ms tick. No input angles.
-                now = time.monotonic()
-                step = min(0.2, max(0, now - self.last_motion)) * 10
-                self.pan = max(-45, min(45, self.pan + x * step))
-                self.tilt = max(-15, min(45, self.tilt + y * step))
-                self.write({"T": 133, "X": self.pan, "Y": self.tilt, "SPD": 10, "ACC": 5})
-                self.last_motion = now
+                self._drive_gimbal(stick, time.monotonic())
+
+    def _drive(self) -> None:
+        """Watchdog tick: re-drive fresh held states, settle once when none is left."""
+        now = time.monotonic()
+        wheels = self.guard.holding("wheels")
+        gimbal = self.guard.holding("gimbal")
+        if wheels is not None and now - self.last_wheel_write >= WHEEL_RESEND:
+            self._drive_wheels(wheels)
+        if gimbal is not None:
+            if now - self.last_gimbal_write >= GIMBAL_PERIOD:
+                self._drive_gimbal(gimbal, now)
+        else:
+            self.last_gimbal_at = 0.0
+        if self.driving and wheels is None and gimbal is None:
+            self._settle()
+
+    def _drive_wheels(self, stick: Stick) -> None:
+        left, right = differential(stick.x, stick.y, self.hold_maximum)
+        self.write({"T": 1, "L": left, "R": right})
+        self.last_wheel_write = time.monotonic()
+        self.driving = True
+
+    def _drive_gimbal(self, stick: Stick, now: float) -> None:
+        """Integrate the knob as a turning rate; absolute T133 targets stay in limits."""
+        dt = min(0.2, now - self.last_gimbal_at) if self.last_gimbal_at else 0.0
+        self.last_gimbal_at = now
+        self.last_gimbal_write = now
+        x, y = circle(stick.x, stick.y)
+        if not dt or not (x or y):
+            return
+        self.pan = max(-PAN_LIMIT, min(PAN_LIMIT, self.pan + x * GIMBAL_RATE * dt))
+        self.tilt = max(TILT_MIN, min(TILT_MAX, self.tilt + y * GIMBAL_RATE * dt))
+        self.write(
+            {
+                "T": 133,
+                "X": round(self.pan, 2),
+                "Y": round(self.tilt, 2),
+                "SPD": GIMBAL_SPD,
+                "ACC": GIMBAL_ACC,
+            }
+        )
+        self.driving = True
 
     def acquire(self) -> str:
         # Idle telemetry is sampled once per second. Refresh before leasing so the
@@ -192,7 +254,7 @@ class Board:
                 raise ValueError(health_error)
             self.pan = float(self.telemetry.get("pan", 0))
             self.tilt = float(self.telemetry.get("tilt", 0))
-            self.last_motion = time.monotonic()
+            self.last_gimbal_at = 0.0
             return self.guard.acquire()
 
     def _watchdog(self) -> None:
@@ -210,6 +272,7 @@ class Board:
                             self.stop(emergency=True)
                         elif self.health_error() or time.monotonic() - self.received_at > 0.6:
                             self.stop()
+                    self._drive()
                     if time.monotonic() < self.observe_until:
                         interval = 0.05
                     else:
@@ -249,9 +312,10 @@ class Board:
             abs(self.telemetry[key]) > RUNAWAY_SPEED for key in ("L", "R")
         ):
             return "底盘速度或电压反馈异常"
-        # Allow 0.5 deg of measured servo settling; command limits stay at +-45 / -15..45.
+        # Allow 2 deg of measured servo overshoot at the fast factory speed (2026-10-22,
+        # was 0.5 deg at SPD 10); command limits stay at +-45 / -15..45.
         pan, tilt = self.telemetry["pan"], self.telemetry["tilt"]
-        if not -45.5 <= pan <= 45.5 or not -15.5 <= tilt <= 45.5:
+        if not -PAN_LIMIT - 2 <= pan <= PAN_LIMIT + 2 or not TILT_MIN - 2 <= tilt <= TILT_MAX + 2:
             return "云台反馈超出控制范围"
         return ""
 

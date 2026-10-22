@@ -30,7 +30,7 @@ from .nav_stream import NavStream
 from .navframe import make_packet
 from .pose_process import PoseProcess
 from .protocol import AGENT_PROTOCOL, Stick
-from .safety import Guard
+from .safety import Guard, LeaseError
 
 LOGGER = logging.getLogger(__name__)
 M2_MICROPHONE = "hw:CARD=XFMDPV0018,DEV=0"
@@ -271,6 +271,8 @@ class AgentRuntime:
                 raise ValueError("unsupported action")
         except (ValueError, OSError, KeyError, wave.Error) as error:
             result.update(ok=False, error=str(error))
+            if isinstance(error, LeaseError):
+                result["code"] = error.code  # the browser leases again, silently
         await self.send(result)
 
     async def nav_command(self, command: NavCommand) -> dict[str, Any]:

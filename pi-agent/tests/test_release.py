@@ -136,7 +136,6 @@ def test_persistent_qualification_checks_current_health_and_recovers(tmp_path: P
                     x=1,
                     y=0,
                     lease="invalid-lease-000",
-                    challenge="invalid-challenge",
                     sequence=1,
                 )
             )

@@ -28,7 +28,7 @@ from .annotations import (
 )
 from .config import Settings
 from .downloads import ExportDownloads, TemporaryFileResponse
-from .gateway import Gateway
+from .gateway import DeviceError, Gateway
 from .middleware import LimitBody
 from .photo_batches import BatchDelete, BatchSelection
 from .pose_review import ReviewRecorder
@@ -593,37 +593,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.websocket("/ws/control")
     async def control_socket(websocket: WebSocket) -> None:
+        """Relay the browser's held stick states to the car as they arrive.
+
+        No per-command challenge: the car keeps driving the last state it was given
+        for 0.5 s, so the link only has to deliver a state about ten times a second.
+        A refused state is reported with its code; the browser leases again or stops.
+        """
         nonlocal control_owner
         auth = await browser_auth(websocket)
         if auth is None:
             return
         current, token = auth
-        try:
+        latest: dict[str, Stick] = {}
+        wake = asyncio.Event()
+
+        async def relay() -> None:
+            while True:
+                await wake.wait()
+                wake.clear()
+                while latest:
+                    stick = latest.pop(next(iter(latest)))
+                    if control_owner != current.token_hash:
+                        await websocket.send_json(
+                            {"error": "请先按住圆盘取得控制", "code": "lease"}
+                        )
+                        continue
+                    try:
+                        await gateway.rpc("stick", stick.model_dump(), timeout=1)
+                    except TimeoutError:
+                        continue  # superseded by the next state; the car stops by itself
+                    except DeviceError as error:
+                        await websocket.send_json({"error": str(error), "code": error.code})
+                        continue
+                    except ValueError as error:
+                        await websocket.send_json({"error": str(error), "online": False})
+                        continue
+                    await websocket.send_json({"ok": True, "sequence": stick.sequence})
+
+        async def pulse() -> None:
             while await authenticate(token, cached=True):
-                await websocket.send_json(
-                    {
-                        "challenge": gateway.challenge,
-                        "lease": gateway.challenge_lease,
-                        "online": gateway.online,
-                    }
-                )
-                try:
-                    raw = await asyncio.wait_for(websocket.receive_json(), timeout=0.15)
-                except TimeoutError:
-                    continue
-                if await authenticate(token, cached=True) is None:
-                    break
-                if control_owner != current.token_hash:
-                    raise ValueError("请先取得控制租约")
+                await websocket.send_json({"online": gateway.online})
+                await asyncio.sleep(1)
+            await websocket.close(code=4401)
+
+        tasks = [asyncio.create_task(relay()), asyncio.create_task(pulse())]
+        try:
+            while True:
+                raw = await websocket.receive_json()
                 stick = Stick.model_validate(raw)
-                result = await gateway.rpc("stick", stick.model_dump())
-                await websocket.send_json({"ok": result["ok"]})
-        except (ValueError, ValidationError, TimeoutError) as error:
+                latest[stick.target] = stick
+                wake.set()
+        except (ValueError, ValidationError) as error:
             with contextlib.suppress(Exception):
-                await websocket.send_json({"error": str(error) or "控制超时，请重新按住圆盘"})
+                await websocket.send_json({"error": str(error) or "控制报文无效"})
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             browsers.discard(websocket)
             browser_tokens.pop(websocket, None)
             if control_owner == current.token_hash:

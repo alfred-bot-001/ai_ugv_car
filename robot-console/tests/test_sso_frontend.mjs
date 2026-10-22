@@ -16,8 +16,8 @@ async function checkLogout(statusCode, bodyRace = false) {
   function element() {
     return {
       textContent: '', hidden: false, disabled: false, dataset: {}, style: {}, children: [],
-      classList: { remove() {}, add() {} }, setAttribute() {}, addEventListener() {},
-      querySelector: () => element(),
+      classList: { remove() {}, add() {}, toggle() {} }, setAttribute() {}, addEventListener() {},
+      querySelector: () => element(), getBoundingClientRect: () => ({width: 190, height: 190, left: 0, top: 0}),
       getContext: () => ({ clearRect() {} }), append(...children) { this.children.push(...children); },
     };
   }
@@ -40,6 +40,7 @@ async function checkLogout(statusCode, bodyRace = false) {
     location: {protocol: 'https:', host: 'car.aimaker.vip', replace: value => redirects.push(value)},
     WebSocket: Socket,
     setTimeout: callback => { timers.push(callback); return timers.length; }, clearTimeout() {},
+    setInterval: () => 0, clearInterval() {}, performance: {now: () => 0},
     fetch: async path => {
       requests.push(path);
       if (path === '/api/v1/auth/session') return response(200, {csrf: 'test-csrf'});

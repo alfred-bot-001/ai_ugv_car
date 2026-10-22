@@ -3,7 +3,7 @@ const $=selector=>document.querySelector(selector);
 let authStopped=false;
 let csrf='',status={},videoSocket=null,audioSocket=null,controlSocket=null,audioContext=null,toastTimer=null;
 let videoGeneration=0,pendingFrame=null,painting=false,videoStaleTimer=null,videoSource='video';
-let press=null,pressGeneration=0,controlSequence=0,challenge='',lastChallenge='',lease='';
+let press={wheels:null,gimbal:null},dragging=null,pressGeneration=0,controlSequence=0,lease='',leasing=null,streamTimer=null,lastSend=0;
 const labels={available:'已连接',active:'采集中',degraded:'信号偏低',busy:'设备忙',fault:'故障',unknown:'未知',disabled:'未启用'};
 function toast(message){$('#toast').textContent=message;$('#toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').hidden=true,6000);}
 async function api(path,body={}){
@@ -41,15 +41,15 @@ function render(data){status=data;const online=data.online,state=data.state||{},
   metric('servo',online&&board.state==='available'?'遥测正常':'未知',board.gimbal_ready&&board.wheels_ready?'可以控制':board.gate_reason||'等待硬件反馈');
   metric('temperature',system.temperature_c!=null?system.temperature_c.toFixed(1)+'°C':'—',system.load1!=null?'系统负载 '+system.load1.toFixed(2):'等待温度数据');
   metric('memory',system.memory_total?Math.round(system.memory_used/system.memory_total*100)+'%':'—',system.memory_total?(system.memory_used/2**30).toFixed(1)+' / '+(system.memory_total/2**30).toFixed(1)+' GB':'等待内存数据');
-  const battery=batteryText(telemetry.v,press?.target==='wheels');metric('battery',battery.value,battery.detail);$('#metric-battery').classList[battery.level===0?'add':'remove']('low');
+  const battery=batteryText(telemetry.v,!!press.wheels);metric('battery',battery.value,battery.detail);$('#metric-battery').classList[battery.level===0?'add':'remove']('low');
   $('#control-mode').textContent=board.wheels_ready&&board.gimbal_ready?'控制已验收':'观察模式';
   $('#fan').textContent=system.fan_rpm!=null?system.fan_rpm+' RPM':'未知';$('#throttled').textContent=system.throttled==='throttled=0x0'?'无欠压 / 限频':system.throttled||'未知';
   $('#uart').textContent=board.state==='available'?'收到新遥测 · '+board.age_seconds.toFixed(1)+'秒前':'无新遥测';$('#edge').textContent=(state.edge?.state==='active'?'姿态识别中':labels[state.edge?.state]||'未启用')+(state.edge?.inference_ms!=null?' · '+Math.round(state.edge.inference_ms)+' ms':'');const review=data.pose_review;if($('#pose-review-detail')){$('#pose-review-detail').textContent=poseReviewText(review);$('#pose-review-detail').title=review?.day?'统计日期 '+review.day+' · '+(review.timezone||'Asia/Singapore'):'';}
   $('#speaker-state').textContent=state.speaker?.state==='active'?'扬声器播放中':state.speaker?.state==='available'?'扬声器已识别':'扬声器未知';
   $('#audio-detail').textContent=state.microphone?.error||state.microphone?.format||'等待麦克风状态';
   $('#last-update').textContent=online?'数据更新 '+new Date(system.sampled_at*1000).toLocaleTimeString('zh-CN',{hour12:false}):'设备数据不可用';
-  for(const target of ['wheels','gimbal']){const ready=online&&board[target+'_ready']&&!board.estopped,element=$('#stick-'+target);element.setAttribute('aria-disabled',String(!ready));$('#gate-'+target).textContent=board.estopped?'急停锁定':ready?'可以控制':!online?'设备离线':board.control_qualified?'等待硬件恢复':'硬件待检查';$('#gate-'+target).className='badge '+(ready?'':'warning');
-    $('#feedback-'+target).textContent=target==='wheels'&&telemetry.L!=null?'左轮 '+telemetry.L.toFixed(3)+' / 右轮 '+telemetry.R.toFixed(3)+' · '+(ready?'已验收':board.gate_reason):ready?'拖动圆盘转动视角。':board.gate_reason||'设备离线，控制已锁定。';}
+  for(const target of ['wheels','gimbal']){const ready=online&&board[target+'_ready']&&!board.estopped,element=$('#stick-'+target);element.setAttribute('aria-disabled',String(!ready));$('#gate-'+target).textContent=board.estopped?'急停锁定':press[target]?'运动中':ready?'可以控制':!online?'设备离线':board.control_qualified?'等待硬件恢复':'硬件待检查';$('#gate-'+target).className='badge '+(ready?'':'warning');if(!ready&&press[target])stopStick(target);
+    $('#feedback-'+target).textContent=target==='wheels'?(telemetry.L!=null?'左轮 '+telemetry.L.toFixed(3)+' / 右轮 '+telemetry.R.toFixed(3)+' · '+(ready?'已验收':board.gate_reason):board.gate_reason||'设备离线，控制已锁定。'):(telemetry.pan!=null?'水平 '+telemetry.pan.toFixed(1)+'° / 俯仰 '+telemetry.tilt.toFixed(1)+'° · '+(ready?'拖动圆盘转动视角':board.gate_reason):ready?'拖动圆盘转动视角。':board.gate_reason||'设备离线，控制已锁定。');}
   for(const id of ['video-toggle','snapshot','listen','say','speech-stop'])if(!$('#'+id).dataset.busy)$('#'+id).disabled=!online;
   $('#transcribe').disabled=!online||!data.asr_ready||$('#transcribe').dataset.busy==='1';$('#transcribe').title=data.asr_ready?'采集 5 秒后在 Mini 本地转写':'尚未安装 Mini 本地转写模型';
   if(!online){closeMedia();releaseStick();}else if(!videoSocket)faceState('idle');
@@ -87,19 +87,35 @@ $('#transcribe').onclick=()=>action($('#transcribe'),async()=>{$('#transcript').
 $('#volume').oninput=()=>$('#volume-value').textContent=$('#volume').value+'%';
 $('#say-form').onsubmit=e=>{e.preventDefault();action($('#say'),async()=>{$('#speech-detail').textContent='Mini 正在合成语音…';await api('speech/say',{text:$('#say-text').value,volume:Number($('#volume').value)/100});$('#speech-detail').textContent='老三已接收播放任务';});};
 $('#speech-stop').onclick=()=>action($('#speech-stop'),async()=>{await api('control/stop');toast('已发送停止');});
-function connectControl(){if(authStopped)return;controlSocket=socket('control');controlSocket.onmessage=e=>{const data=JSON.parse(e.data);if(data.error){toast(data.error);releaseStick();return;}if(data.challenge&&data.lease===lease){challenge=data.challenge;if(press&&lease&&challenge!==lastChallenge){lastChallenge=challenge;controlSocket.send(JSON.stringify(stickMessage(press,lease,challenge,++controlSequence,clampSpeed($('#speed').value))));}}};controlSocket.onclose=()=>{releaseStick();if(!authStopped)setTimeout(connectControl,1500);};}
+// ---- joysticks. The knob stays where it is put and the car keeps moving: the page
+// relays every held state ten times a second (no per-command handshake, no press
+// budget). Stop by dragging the knob back to the middle, tapping the middle, the stop
+// buttons or the emergency stop; hiding the page or losing the link also stops.
+const STREAM_MS=100,DEAD_ZONE=.12;
+function engaged(){return !!(press.wheels||press.gimbal);}
+function connectControl(){if(authStopped)return;controlSocket=socket('control');controlSocket.onmessage=e=>{const data=JSON.parse(e.data);if(data.code==='lease'){lease='';if(engaged())acquireLease();return;}if(data.error){toast(data.error);releaseStick();return;}if(data.online===false&&engaged())releaseStick();};controlSocket.onclose=()=>{releaseStick();if(!authStopped)setTimeout(connectControl,1500);};}
 // Wheels T1 ceiling band, same numbers as tvpet_pi.protocol (0.07..0.18, default 0.10).
 function clampSpeed(value){const speed=Number(value);return Number.isFinite(speed)&&speed>0?Math.min(.18,Math.max(.07,speed)):.1;}
-function stickMessage(press,lease,challenge,sequence,speed){const message={target:press.target,x:press.x,y:press.y,lease,challenge,sequence};if(press.target==='wheels')message.speed=speed;return message;}
+function stickMessage(target,state,lease,sequence,speed){const message={target,x:state.x,y:state.y,lease,sequence};if(target==='wheels')message.speed=speed;return message;}
 function speedLabel(speed){return speed.toFixed(2)+(speed>=.18?' · 最快':speed<=.07?' · 最慢':speed===.1?' · 默认':'');}
 function loadSpeed(){try{return clampSpeed(localStorage.getItem('wheels-speed'));}catch{return .1;}}
 $('#speed').value=loadSpeed();$('#speed-value').textContent=speedLabel(clampSpeed($('#speed').value));
 $('#speed').oninput=()=>{const speed=clampSpeed($('#speed').value);$('#speed-value').textContent=speedLabel(speed);try{localStorage.setItem('wheels-speed',String(speed));}catch{}};
-function positionStick(element,event){const rect=element.getBoundingClientRect(),radius=rect.width/2-35;let x=(event.clientX-rect.left-rect.width/2)/radius,y=-(event.clientY-rect.top-rect.height/2)/radius;const scale=Math.max(1,Math.hypot(x,y));x/=scale;y/=scale;press.x=Math.abs(x)<.1?0:x;press.y=Math.abs(y)<.1?0:y;element.querySelector('.stick-knob').style.transform=`translate(${x*radius}px,${-y*radius}px)`;}
-async function beginStick(element,event){if(element.getAttribute('aria-disabled')==='true'){toast(status.state?.board?.gate_reason||'等待设备恢复后控制');return;}if(press)return;event.preventDefault();const generation=++pressGeneration;press={target:element.dataset.target,x:0,y:0};if(event.pointerId!=null){element.setPointerCapture(event.pointerId);positionStick(element,event);}try{const result=await(await api('control/lease')).json();if(generation!==pressGeneration||!press){await api('control/stop');return;}lease=result.lease;lastChallenge='';}catch(error){toast(error.message);releaseStick();}}
-function releaseStick(){const had=!!press||!!lease;pressGeneration++;press=null;lease='';for(const knob of document.querySelectorAll('.stick-knob'))knob.style.transform='translate(0,0)';if(had&&csrf)api('control/stop').catch(()=>{});}
-for(const element of document.querySelectorAll('.joystick')){element.addEventListener('pointerdown',e=>beginStick(element,e));element.addEventListener('pointermove',e=>{if(press?.target===element.dataset.target)positionStick(element,e);});for(const kind of ['pointerup','pointercancel','lostpointercapture'])element.addEventListener(kind,releaseStick);element.addEventListener('keydown',async e=>{if(!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)||e.repeat)return;await beginStick(element,e);if(press){press.x=e.key==='ArrowLeft'?-1:e.key==='ArrowRight'?1:0;press.y=e.key==='ArrowUp'?1:e.key==='ArrowDown'?-1:0;}});element.addEventListener('keyup',releaseStick);element.addEventListener('blur',releaseStick);}
-for(const button of document.querySelectorAll('[data-stop]'))button.onclick=()=>{releaseStick();api('control/stop').then(()=>toast('停止指令已确认')).catch(error=>toast(error.message));};
+function sendSticks(){if(!lease||!controlSocket||controlSocket.readyState!==WebSocket.OPEN)return;lastSend=performance.now();for(const target of ['wheels','gimbal'])if(press[target])controlSocket.send(JSON.stringify(stickMessage(target,press[target],lease,++controlSequence,clampSpeed($('#speed').value))));}
+function sendSoon(){if(lease&&performance.now()-lastSend>40)sendSticks();}
+function startStream(){clearInterval(streamTimer);streamTimer=setInterval(sendSticks,STREAM_MS);sendSticks();}
+function acquireLease(){if(leasing)return leasing;const generation=pressGeneration;leasing=(async()=>{try{const result=await(await api('control/lease')).json();if(generation!==pressGeneration||!engaged()){await api('control/stop').catch(()=>{});return;}lease=result.lease;startStream();}catch(error){toast(error.message);releaseStick();}finally{leasing=null;}})();return leasing;}
+function knob(target,x,y){const element=$('#stick-'+target),radius=element.getBoundingClientRect().width/2-35;element.querySelector('.stick-knob').style.transform=`translate(${x*radius}px,${-y*radius}px)`;element.classList.toggle('engaged',!!(x||y));}
+function positionStick(target,element,event){const rect=element.getBoundingClientRect(),radius=rect.width/2-35;let x=(event.clientX-rect.left-rect.width/2)/radius,y=-(event.clientY-rect.top-rect.height/2)/radius;const scale=Math.max(1,Math.hypot(x,y));x/=scale;y/=scale;if(Math.hypot(x,y)<DEAD_ZONE){x=0;y=0;}press[target]={x,y};knob(target,x,y);sendSoon();}
+function beginStick(element,event){const target=element.dataset.target;if(element.getAttribute('aria-disabled')==='true'){toast(status.state?.board?.gate_reason||'等待设备恢复后控制');return;}event.preventDefault();if(!engaged())pressGeneration++;dragging=target;if(event.pointerId!=null){element.setPointerCapture(event.pointerId);positionStick(target,element,event);}else if(!press[target])press[target]={x:0,y:0};if(!lease)acquireLease();}
+function endDrag(element){const target=element.dataset.target;if(dragging!==target)return;dragging=null;const state=press[target];if(state&&!state.x&&!state.y)stopStick(target);}
+// Centre one knob and drop it from the relay; the lease ends once nothing is held.
+function stopStick(target){if(press[target]){press[target]={x:0,y:0};sendSticks();press[target]=null;}knob(target,0,0);if(dragging===target)dragging=null;if(!engaged())releaseStick();}
+function releaseStick(){const had=engaged()||!!lease;pressGeneration++;clearInterval(streamTimer);streamTimer=null;press={wheels:null,gimbal:null};dragging=null;lease='';for(const target of ['wheels','gimbal'])knob(target,0,0);if(had&&csrf)api('control/stop').catch(()=>{});}
+const ARROWS={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,1],ArrowDown:[0,-1]};
+for(const element of document.querySelectorAll('.joystick')){const target=element.dataset.target;element.addEventListener('pointerdown',e=>beginStick(element,e));element.addEventListener('pointermove',e=>{if(dragging===target&&press[target])positionStick(target,element,e);});for(const kind of ['pointerup','pointercancel','lostpointercapture'])element.addEventListener(kind,()=>endDrag(element));
+  element.addEventListener('keydown',e=>{if(!ARROWS[e.key]||e.repeat)return;beginStick(element,e);if(press[target]){const [x,y]=ARROWS[e.key];press[target]={x,y};knob(target,x,y);dragging=null;sendSoon();}});element.addEventListener('keyup',e=>{if(ARROWS[e.key])stopStick(target);});}
+for(const button of document.querySelectorAll('[data-stop]'))button.onclick=()=>{const target=button.dataset.stop;stopStick(target);api('control/stop').then(()=>toast('停止指令已确认')).catch(error=>toast(error.message));};
 $('#estop').onclick=()=>{releaseStick();api('control/estop').then(()=>toast('老三已锁定急停')).catch(error=>toast(error.message));};$('#reset-estop').onclick=()=>api('control/reset').then(()=>toast('停止锁已解除')).catch(error=>toast(error.message));
 window.addEventListener('blur',releaseStick);document.addEventListener('visibilitychange',()=>{if(document.hidden){releaseStick();closeMedia();}});window.addEventListener('pagehide',()=>{releaseStick();closeMedia();controlSocket?.close();});
 $('#logout').onclick=()=>action($('#logout'),async()=>{
