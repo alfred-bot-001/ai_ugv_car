@@ -5,6 +5,7 @@ import struct
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -58,14 +59,13 @@ def test_online_protocol_control_and_media(tmp_path: Path, video_protocol: str) 
                         command = device.receive_json()
                         if command.get("kind") == "command":
                             commands.append(command)
-                            device.send_json(
-                                {
-                                    "kind": "result",
-                                    "id": command["id"],
-                                    "ok": True,
-                                    "lease": "test-valid-lease",
-                                }
-                            )
+                            args = command.get("args") or {}
+                            if command["action"] == "stick" and args.get("sequence") == 3:
+                                # The car no longer holds that lease: code, not a toast.
+                                reply = {"ok": False, "error": "控制租约已更换", "code": "lease"}
+                            else:
+                                reply = {"ok": True, "lease": "test-valid-lease"}
+                            device.send_json({"kind": "result", "id": command["id"], **reply})
                 except (WebSocketDisconnect, RuntimeError, EndOfStream):
                     pass
 
@@ -83,6 +83,24 @@ def test_online_protocol_control_and_media(tmp_path: Path, video_protocol: str) 
             ) as control:
                 control.send_json({"csrf": auth["csrf"]})
                 assert control.receive_json()["online"]
+
+                def reply_for(key: str) -> dict[str, Any]:
+                    reply = control.receive_json()
+                    while key not in reply:  # online pulses interleave with results
+                        reply = control.receive_json()
+                    return reply
+
+                # Before a lease the relay answers with the lease code, never a toast.
+                control.send_json(
+                    {
+                        "target": "gimbal",
+                        "x": 0.2,
+                        "y": 0,
+                        "lease": "no-lease-yet-0000",
+                        "sequence": 1,
+                    }
+                )
+                assert reply_for("code")["code"] == "lease"
                 assert client.post("/api/v1/control/lease", headers=headers).status_code == 200
                 control.send_json(
                     {
@@ -90,26 +108,28 @@ def test_online_protocol_control_and_media(tmp_path: Path, video_protocol: str) 
                         "x": 0.2,
                         "y": 0,
                         "lease": "test-valid-lease",
-                        "challenge": "test-valid-challenge",
                         "sequence": 1,
                     }
                 )
-                assert control.receive_json()["ok"]
+                assert reply_for("ok") == {"ok": True, "sequence": 1}
                 control.send_json(
                     {
                         "target": "wheels",
                         "x": 0,
                         "y": 1,
                         "lease": "test-valid-lease",
-                        "challenge": "test-valid-challenge",
                         "sequence": 2,
                         "speed": 0.15,
                     }
                 )
-                reply = control.receive_json()
-                while "ok" not in reply:  # challenge frames interleave with results
-                    reply = control.receive_json()
-                assert reply["ok"]
+                assert reply_for("ok")["ok"]
+                control.send_json(
+                    {"target": "wheels", "x": 0, "y": 1, "lease": "test-valid-lease", "sequence": 3}
+                )
+                refused = reply_for("code")
+                assert refused["code"] == "lease" and "租约" in refused["error"]
+                control.send_json({"target": "wheels", "x": 0, "y": 1, "sequence": 4})
+                assert "error" in reply_for("error")  # malformed: no lease field
             for action in ("stop", "estop", "reset"):
                 assert client.post("/api/v1/control/" + action, headers=headers).status_code == 200
             assert client.post("/api/v1/control/unknown", headers=headers).status_code == 404
@@ -141,4 +161,5 @@ def test_online_protocol_control_and_media(tmp_path: Path, video_protocol: str) 
             stop.set()
         thread.join(timeout=0.5)
         sticks = [command["args"] for command in commands if command["action"] == "stick"]
-        assert [stick["speed"] for stick in sticks] == [0.1, 0.15]
+        assert [stick["speed"] for stick in sticks] == [0.1, 0.15, 0.1]
+        assert all("challenge" not in stick for stick in sticks)

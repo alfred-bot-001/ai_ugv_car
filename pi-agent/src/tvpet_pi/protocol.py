@@ -26,7 +26,7 @@ class Stick(BaseModel):
     x: float = Field(ge=-1, le=1)
     y: float = Field(ge=-1, le=1)
     lease: str = Field(min_length=16, max_length=128)
-    challenge: str = Field(min_length=16, max_length=128)
+    # Monotonic per lease; an older state arriving late is ignored, never rejected.
     sequence: int = Field(ge=1)
     # T1 ceiling for this command; only the wheels use it.
     speed: float = Field(

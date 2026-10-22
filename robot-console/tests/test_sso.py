@@ -332,7 +332,7 @@ def test_browser_control_revocation_closes_socket_without_commands(client: TestC
         "wss://car.aimaker.vip/ws/control", headers={"Origin": ORIGIN}, subprotocols=["console.v1"]
     ) as socket:
         socket.send_json({"csrf": headers["X-CSRF-Token"]})
-        assert "challenge" in socket.receive_json()
+        assert "online" in socket.receive_json()
         start = time.monotonic()
         client.issuer.active = False
         while True:

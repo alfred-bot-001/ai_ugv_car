@@ -14,8 +14,8 @@
 
 | 目录 | 包 / 版本 | 运行在 |
 | --- | --- | --- |
-| `robot-console/` | `tvpet_console`（ai-tv-pet-console 0.9.1），FastAPI 主控台，网页在 `src/tvpet_console/web/` | Mini（ssh `agent001`） |
-| `pi-agent/` | `tvpet_pi`（ai-tv-pet-pi-agent 0.7.1），设备代理，唯一的底盘 UART 所有者，含导航桥 `nav.py` | 车上 Pi 5（ssh `agent003`，用户 ws，免密 sudo） |
+| `robot-console/` | `tvpet_console`（ai-tv-pet-console 0.10.0），FastAPI 主控台，网页在 `src/tvpet_console/web/` | Mini（ssh `agent001`） |
+| `pi-agent/` | `tvpet_pi`（ai-tv-pet-pi-agent 0.8.0），设备代理，唯一的底盘 UART 所有者，含导航桥 `nav.py` | 车上 Pi 5（ssh `agent003`，用户 ws，免密 sudo） |
 | `ugv-nav/` | `ugv_nav_tools`（ai-ugv-car-nav-tools 0.5.1）+ ROS2 Humble 容器（SLAM Toolbox、Nav2、RF2O、EKF）+ 主机服务 `ugv-navd` | Pi 的 docker 容器 `ugv-nav` |
 
 包名、launchd 标签、systemd 服务名、部署目录**刻意沿用 ai-tv-pet-***，线上部署依赖它们，不要改名。

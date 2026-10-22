@@ -17,6 +17,14 @@ from tvpet_pi.protocol import MAX_AUDIO, MAX_JPEG, PoseResult
 from .faces import FaceVideo
 
 
+class DeviceError(ValueError):
+    """The car refused a command; `code` lets the browser react without a toast."""
+
+    def __init__(self, message: str, code: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class Gateway:
     def __init__(self, face_service_url: str = "", background_video: bool = False) -> None:
         self.background_video = background_video
@@ -77,7 +85,9 @@ class Gateway:
             )
             result = await asyncio.wait_for(future, timeout)
             if not result.get("ok"):
-                raise ValueError(str(result.get("error", "设备拒绝操作")))
+                raise DeviceError(
+                    str(result.get("error", "设备拒绝操作")), str(result.get("code", ""))
+                )
             return result
         finally:
             self.pending.pop(request_id, None)

@@ -1,4 +1,4 @@
-"""Pi-monotonic leases and single-use challenges, independent of Mini clocks."""
+"""Pi-monotonic leases, the held stick states the Board keeps driving, audio challenges."""
 
 import math
 import secrets
@@ -6,6 +6,23 @@ import time
 from collections.abc import Callable
 
 from .protocol import Stick
+
+# 2026-10-22, user decision: the web knobs stay where they are put and the car keeps
+# moving until a knob is centred, a stop button is pressed, the page hides or the
+# link drops. The page relays each held state about ten times a second; a held state
+# older than this drives nothing more (the Board writes the stop commands) but the
+# lease stays, so the next relayed state resumes without a new lease. There is no
+# per-command challenge and no per-press time budget any more: both used to turn a
+# slow public round trip into a rejected command, a toast and a stopped car.
+HOLD_MAX_AGE = 0.5
+# Mini heartbeats arrive every 0.2 s; three missed ones end the lease.
+HEARTBEAT_MAX_AGE = 0.6
+
+
+class LeaseError(ValueError):
+    """The stick names a lease the Guard no longer holds; the browser leases again."""
+
+    code = "lease"
 
 
 def circle(x: float, y: float) -> tuple[float, float]:
@@ -22,7 +39,7 @@ def differential(x: float, y: float, maximum: float = 0.10) -> tuple[float, floa
 
 
 class Guard:
-    """Revokes on epoch/disconnect, stale challenge, press budget and emergency stop."""
+    """Revokes on epoch/disconnect, stale heartbeat, session deadline and emergency stop."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self.clock = clock
@@ -30,10 +47,12 @@ class Guard:
         self.lease = ""
         self.lease_deadline = 0.0
         self.press_deadline = 0.0
-        self.motion_deadline = 0.0
         self.last_heartbeat = 0.0
         self.sequence = 0
+        # Single-use challenges remain for audio playback only.
         self.challenges: dict[str, float] = {}
+        # The last accepted stick per target and when it arrived.
+        self.held: dict[str, tuple[Stick, float]] = {}
         self.estopped = False
         self.gimbal_verified = False
         self.wheels_verified = False
@@ -49,49 +68,58 @@ class Guard:
         if self.estopped or self.lease:
             raise ValueError("急停锁定或已有控制租约")
         self.lease = secrets.token_urlsafe(24)
-        # 2026-10-22, user decision: no per-press or per-lease time budget; holding the
-        # stick drives until release. Revocation still comes from the single-use 0.45 s
-        # challenge, the 0.6 s heartbeat, the firmware 300 ms timeout and every explicit
-        # stop. nav.py overwrites both deadlines with its bounded arm session.
+        # No time budget for the web knobs; nav.py bounds its own arm session by
+        # overwriting both deadlines.
         self.lease_deadline = math.inf
         self.press_deadline = math.inf
         self.sequence = 0
         self.challenges.clear()
+        self.held.clear()
         return self.lease
 
     def heartbeat(self) -> None:
         self.last_heartbeat = self.clock()
 
-    def accept(self, stick: Stick) -> tuple[float, float]:
+    def accept(self, stick: Stick) -> tuple[float, float] | None:
+        """Hold a new stick state; None means an older state arrived late and is ignored."""
         now = self.clock()
-        expiry = self.challenges.pop(stick.challenge, 0)
-        ready = self.wheels_verified if stick.target == "wheels" else self.gimbal_verified
-        if (
-            self.estopped
-            or not ready
-            or not self.lease
-            or stick.lease != self.lease
-            or now >= min(expiry, self.lease_deadline, self.press_deadline)
-            or now - self.last_heartbeat >= 0.6
-            or stick.sequence <= self.sequence
-        ):
-            raise ValueError("控制被拒绝：设备未验收、租约或 challenge 已失效")
+        if self.estopped:
+            raise ValueError("急停已锁定，先解除急停")
+        if stick.target == "wheels" and not self.wheels_verified:
+            raise ValueError("底盘尚未完成实机验收")
+        if stick.target == "gimbal" and not self.gimbal_verified:
+            raise ValueError("云台尚未完成实机验收")
+        if not self.lease or stick.lease != self.lease:
+            raise LeaseError("控制租约已更换")
+        if now >= min(self.lease_deadline, self.press_deadline):
+            raise ValueError("控制会话已到期")
+        if stick.sequence <= self.sequence:
+            return None
         self.sequence = stick.sequence
-        self.motion_deadline = min(expiry, self.lease_deadline, self.press_deadline)
+        self.held[stick.target] = (stick, now)
         return circle(stick.x, stick.y)
+
+    def holding(self, target: str) -> Stick | None:
+        """The state the Board keeps driving: fresh, under the lease, with the link alive."""
+        entry = self.held.get(target)
+        if entry is None or not self.lease or self.expired():
+            return None
+        stick, accepted_at = entry
+        if self.clock() - accepted_at >= HOLD_MAX_AGE:
+            return None
+        return stick
 
     def expired(self) -> bool:
         now = self.clock()
         return bool(self.lease) and (
             now >= min(self.press_deadline, self.lease_deadline)
-            or now - self.last_heartbeat >= 0.6
-            or (self.motion_deadline > 0 and now >= self.motion_deadline)
+            or now - self.last_heartbeat >= HEARTBEAT_MAX_AGE
         )
 
     def release(self, *, emergency: bool = False) -> None:
         self.lease = ""
         self.challenges.clear()
-        self.motion_deadline = 0.0
+        self.held.clear()
         self.estopped = self.estopped or emergency
 
     def disconnect(self) -> None:
