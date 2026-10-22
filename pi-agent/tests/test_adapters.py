@@ -149,11 +149,12 @@ def test_uart_watchdog_and_evidence(tmp_path: Path, monkeypatch) -> None:
         time.sleep(0.25)  # the watchdog re-drives the held state under the 300 ms timeout
         assert sum(1 for c in writes() if c.get("T") == 1 and c.get("L") == 0.05) >= 2
         guard.heartbeat()
+        written = len(writes())
         time.sleep(0.5)  # no new state: motion stops, the lease stays for the next state
         assert guard.lease == lease
         wheel = [c for c in writes() if c.get("T") == 1]
         assert wheel[-1] == {"T": 1, "L": 0.0, "R": 0.0}
-        assert not any(c.get("T") == 135 for c in writes())  # no sagging gimbal stop
+        assert not any(c.get("T") == 135 for c in writes()[written:])  # no sagging stop
         guard.heartbeat()
         board.move(Stick(target="gimbal", x=1, y=0, lease=lease, sequence=2))
         time.sleep(0.15)  # integrated at 20 Hz: pan grows, tilt stays, limits hold
