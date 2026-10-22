@@ -153,7 +153,7 @@ def test_uart_watchdog_and_evidence(tmp_path: Path, monkeypatch) -> None:
         assert guard.lease == lease
         wheel = [c for c in writes() if c.get("T") == 1]
         assert wheel[-1] == {"T": 1, "L": 0.0, "R": 0.0}
-        assert any(c.get("T") == 135 for c in writes())
+        assert not any(c.get("T") == 135 for c in writes())  # no sagging gimbal stop
         guard.heartbeat()
         board.move(Stick(target="gimbal", x=1, y=0, lease=lease, sequence=2))
         time.sleep(0.15)  # integrated at 20 Hz: pan grows, tilt stays, limits hold
@@ -161,6 +161,7 @@ def test_uart_watchdog_and_evidence(tmp_path: Path, monkeypatch) -> None:
         assert gimbal and gimbal[-1]["X"] > gimbal[0]["X"] >= 0 and gimbal[-1]["Y"] == 0
         assert gimbal[-1]["SPD"] == 0 and all(c["X"] <= 45 for c in gimbal)
         board.stop(emergency=True)
+        assert json.loads(uart.write.call_args_list[-1].args[0]) == {"T": 135}
         assert guard.estopped
         evidence.write_text("{}")
         board.load_evidence()
