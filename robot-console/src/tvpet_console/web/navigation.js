@@ -201,7 +201,7 @@ function renderControls(){
   const wheels=!!lastStatus.online&&board.wheels_ready&&!board.estopped;
   $('#stick-wheels').setAttribute('aria-disabled',String(!wheels||driving));
   const gate=$('#gate-wheels');gate.textContent=board.estopped?'急停锁定':driving?'导航中':wheels?'可以控制':!lastStatus.online?'设备离线':board.control_qualified?'等待硬件恢复':'硬件待检查';gate.className='badge '+(wheels&&!driving?'':'warning');
-  $('#feedback-wheels').textContent=driving?'正在自主导航；要手动开，先点「取消导航」。':wheels&&Number.isFinite(telemetry.L)?'左轮 '+telemetry.L.toFixed(3)+' / 右轮 '+telemetry.R.toFixed(3)+' m/s':board.gate_reason||'支持触摸、鼠标与方向键';
+  $('#feedback-wheels').textContent=driving?'正在自主导航；要手动开，先点「取消导航」。':wheels&&Number.isFinite(telemetry.L)?'速度上限 '+wheelSpeed().toFixed(2)+' m/s（在设备总览页调）· 左 '+telemetry.L.toFixed(2)+' / 右 '+telemetry.R.toFixed(2):board.gate_reason||'支持触摸、鼠标与方向键';
   $('#reset-estop').hidden=!board.estopped;
 }
 function setTool(name){
@@ -313,10 +313,12 @@ $('#refresh-maps').onclick=()=>loadMaps();
 $('#map-select').onchange=()=>renderControls();
 
 // ---- wheel joystick
+// The speed chosen with the dashboard slider (same 0.07..0.18 band as tvpet_pi.protocol).
+function wheelSpeed(){try{const speed=Number(localStorage.getItem('wheels-speed'));return Number.isFinite(speed)&&speed>0?Math.min(.18,Math.max(.07,speed)):.1;}catch{return .1;}}
 function connectControl(){
   if(stopped||controlSocket)return;
   const ws=socket('control');controlSocket=ws;
-  ws.onmessage=e=>{const data=JSON.parse(e.data);if(data.error){toast(data.error);releaseStick();return;}if(data.challenge&&data.lease===lease){challenge=data.challenge;if(press&&lease&&challenge!==lastChallenge){lastChallenge=challenge;ws.send(JSON.stringify({target:'wheels',x:press.x,y:press.y,lease,challenge,sequence:++controlSequence}));}}};
+  ws.onmessage=e=>{const data=JSON.parse(e.data);if(data.error){toast(data.error);releaseStick();return;}if(data.challenge&&data.lease===lease){challenge=data.challenge;if(press&&lease&&challenge!==lastChallenge){lastChallenge=challenge;ws.send(JSON.stringify({target:'wheels',x:press.x,y:press.y,lease,challenge,sequence:++controlSequence,speed:wheelSpeed()}));}}};
   ws.onclose=()=>{if(controlSocket===ws)controlSocket=null;releaseStick();if(!stopped)setTimeout(connectControl,1500);};
 }
 function positionStick(element,event){const rect=element.getBoundingClientRect(),radius=rect.width/2-30;let x=(event.clientX-rect.left-rect.width/2)/radius,y=-(event.clientY-rect.top-rect.height/2)/radius;const scale=Math.max(1,Math.hypot(x,y));x/=scale;y/=scale;press.x=Math.abs(x)<.1?0:x;press.y=Math.abs(y)<.1?0:y;element.querySelector('.stick-knob').style.transform=`translate(${x*radius}px,${-y*radius}px)`;}
