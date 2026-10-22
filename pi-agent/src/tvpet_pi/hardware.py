@@ -164,13 +164,18 @@ class Board:
     def stop(self, *, emergency: bool = False) -> None:
         with self.lock:
             self.guard.release(emergency=emergency)
-            self._settle()
+            self._settle(gimbal_stop=True)
 
-    def _settle(self) -> None:
-        """Write the stop commands once; the lease (if any) is untouched."""
+    def _settle(self, *, gimbal_stop: bool) -> None:
+        """Write the stop commands once; the lease (if any) is untouched.
+
+        A stale hold only zeroes the wheels: the gimbal is already at (or within one
+        3 deg step of) its last target, and the lifted-car probe of 2026-10-22 showed
+        T135 letting the tilt servo sag about 6 deg under the camera's weight.
+        """
         self.driving = False
         self.write({"T": 1, "L": 0.0, "R": 0.0})
-        if self.guard.gimbal_verified:
+        if gimbal_stop and self.guard.gimbal_verified:
             self.write({"T": 135})
 
     def move(self, stick: Stick, maximum: float | None = None) -> None:
@@ -204,7 +209,7 @@ class Board:
         else:
             self.last_gimbal_at = 0.0
         if self.driving and wheels is None and gimbal is None:
-            self._settle()
+            self._settle(gimbal_stop=False)
 
     def _drive_wheels(self, stick: Stick) -> None:
         left, right = differential(stick.x, stick.y, self.hold_maximum)
