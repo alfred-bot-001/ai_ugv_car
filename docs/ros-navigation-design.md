@@ -122,7 +122,7 @@
 - `network_mode: host`，设置 `ROS_LOCALHOST_ONLY=1` 和固定的 `ROS_DOMAIN_ID`，DDS 流量不出本机。不安装 rosbridge，不开放任何端口，也不开 SSH 或 Jupyter。
 - 只挂载两样设备：雷达 by-id 路径（经 udev 生成 `/dev/ugv_lidar`）和 `pi-agent` 的 UNIX 套接字。**不挂载** `/dev/ttyAMA0`、摄像头、M2 或声卡。
 - 由 systemd 单元 `ugv-nav.service` 管理，默认不自启；只有 `pi-agent` 收到 Mini 的建图或导航任务时才启动，空闲 N 分钟后停止。设置 CPU、内存配额和 `Nice`，预算见 §8。
-- 地图存放在 `/home/ws/deploy/ugv-nav/maps/<map_id>/`（`map.yaml`、`map.pgm`、`map.posegraph`、`meta.json`），目录 0700。
+- 地图存放在数据目录 `/home/ws/agent-data/ai-ugv-car/maps/`（`<名称>.yaml`、`<名称>.pgm`，另有地点和禁行区文件），巡航报告在同级 `reports/`，目录 0700，与应用部署目录分开（2026-10-22 用户要求，ugv-nav 0.5.1）。
 
 ### 5.2 pi-agent 的 ROS 桥职责
 

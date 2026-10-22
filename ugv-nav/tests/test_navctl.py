@@ -109,10 +109,12 @@ class FakeRos:
 
 
 def make_ctl(tmp_path: Path, navigate: list[dict[str, Any]]) -> tuple[NavCtl, FakeRos, Mock]:
-    settings = Settings(deploy=tmp_path / "deploy", board=tmp_path / "board")
+    settings = Settings(
+        deploy=tmp_path / "deploy", board=tmp_path / "board", data=tmp_path / "data"
+    )
     settings.board.mkdir()
     (settings.compose_dir).mkdir(parents=True)
-    settings.maps.mkdir()
+    settings.maps.mkdir(parents=True)
     fake = FakeRos(navigate, settings.board)
     board = Mock()
     board.status.return_value = {
@@ -172,8 +174,11 @@ def test_patrol_records_a_crashing_leg_and_stays_disarmed(tmp_path: Path) -> Non
 
 def test_modes_save_and_cli(tmp_path: Path) -> None:
     ctl, fake, _ = make_ctl(tmp_path, [])
+    ctl.settings.maps.rmdir()
     ctl.set_mode(mapping=True)
     assert "mapping:=true" in (ctl.settings.compose_dir / ".env").read_text()
+    for folder in (ctl.settings.data, ctl.settings.maps, ctl.settings.reports):
+        assert stat.S_IMODE(folder.stat().st_mode) == 0o700
     assert fake.calls[-1][-3:] == ["up", "-d", "--force-recreate"]
     with pytest.raises(ValueError, match="not found"):
         ctl.set_mode(mapping=False, name="room")

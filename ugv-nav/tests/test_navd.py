@@ -72,10 +72,12 @@ class Deferred:
 def make_navd(
     tmp_path: Path, replies: dict[str, list[dict[str, Any]]] | None = None, volts: float = 12.0
 ) -> tuple[Navd, FakeRun, Deferred]:
-    settings = Settings(deploy=tmp_path / "deploy", board=tmp_path / "board")
+    settings = Settings(
+        deploy=tmp_path / "deploy", board=tmp_path / "board", data=tmp_path / "data"
+    )
     settings.board.mkdir()
     settings.compose_dir.mkdir(parents=True)
-    settings.maps.mkdir()
+    settings.maps.mkdir(parents=True)
     run = FakeRun(settings.board, replies or {})
     board = Mock()
     board.status.return_value = {"ok": True, "telemetry": {"L": 0.0, "R": 0.0, "v": volts}}

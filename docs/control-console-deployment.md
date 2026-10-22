@@ -360,3 +360,15 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **页面**：去掉 1.9 秒自动归位计时器，帮助文字改为「按住多久走多久，松手即停」。
 - **验证**：门禁通过；`test_safety.py` 新增 10 分钟持续按住用例，`test_speed_frontend.mjs` 断言页面不再有自动归位计时器。未连真车。
 - **部署阻塞**：Mini/Pi 当前运行的是另一个会话未推送的 `feat/map-controls`（Mini 本地分支，主控台 0.9.0 / Pi 代理 0.7.0，地图页控制）。从 main 构建会覆盖它，所以本次没有部署。该分支需要先变基到 main 再发版；它的地图页摇杆 `navigation.js` 里也有自己的 `setTimeout(releaseStick,1900)`，要一并去掉。
+
+## 2026-10-22 地图页控制建图与导航（Mini 0.9.0 / Pi 0.7.0 / ugv-nav 0.5.1）
+
+用户要求「继续做导航功能，自主导航和绘图」。地图页 `https://car.aimaker.vip/navigation` 从只读变成可操作：
+
+- **页面**：右侧新增「建图与导航」面板（容器状态、模式、当前任务、开始建图、保存地图、已保存地图列表与「加载并定位」、内嵌底盘圆盘）；地图下方新增「浏览 / 设置位置 / 去这里」工具和「取消导航」；顶部急停旁出现「解除急停」（仅在急停锁定时）。会让车动或清空地图的操作都先弹确认框：「去这里」显示直线距离、预计时间，目标在障碍或未探索区时额外提醒；重新建图用红色按钮；保存时同名地图要再点一次才覆盖。内嵌圆盘沿用设备总览的速度滑杆设置（浏览器 `wheels-speed`）。
+- **链路**：浏览器 `POST /api/v1/nav/command`（登录、CSRF、Origin，写审计 `nav.<操作>`）、`GET /api/v1/nav/maps` → Mini 校验 `NavCommand`（只收各操作自己的字段，地图名 `[A-Za-z0-9_-]{1,64}`，坐标 ±100 m）→ 控制通道 `nav` 命令 → Pi 代理再校验后转给主机服务 `ugv-navd`。Pi 代理的 systemd 沙箱（NoNewPrivileges、home 只读）不能跑 `sudo docker`，所以由 `ugv-navd`（用户 ws，`/etc/systemd/system/ugv-navd.service`，源文件 `ugv-nav/systemd/`）调用与 `ugv-navctl` 相同的 NavCtl。它的 socket 在 `/home/ws/deploy/ugv-nav/run/ops.sock`（目录 0700、socket 0600），容器不挂载这个目录，ROS 侧拿不到开授权窗口的入口。一次只跑一个任务；状态和结果随地图页的 agent 包每秒更新，任务结束写进页面日志。
+- **取消**：Pi 代理先在本地停轮、结束当前授权会话（导航桥锁存 `operator_cancel`，`ugv-ros-op navigate` 0.5 s 内看到并取消 Nav2 目标），再让 `ugv-navd` 立即撤销 `arm.json` 并取消 Nav2 目标。NavCtl 加了取消钩子：还没开授权窗口的目标在取消后不会再开窗口。`ugv-navd` 不可用时取消仍会停车。
+- **数据目录（用户要求）**：保存的地图和巡航报告从应用目录移到 `/home/ws/agent-data/ai-ugv-car/{maps,reports}`（0700，仿 Mini 的 `workspace-agent/agent-data/`）。迁移是同一文件系统内 `mv`，12 个地图文件 sha256 迁移前后一致；容器挂载改为新目录，NavCtl 切换模式前会先建好目录（否则 docker 会以 root 建目录，容器写不进去）。容器内 uid 1000 读写已核验。
+- **部署**：rebase 到 main `43fc6d4`（另一会话的速度滑杆，Pi 0.6.1 / Mini 0.8.1）之上，本次版本已包含它。ugv-nav 源码备份 `backups/20261022-pre-0.5.0/src.tgz`，构建日志 `build-0.5.0.log`、`build-0.5.1.log`，镜像 0.5.0、0.5.1，主机 `.venv` 0.5.1。Pi 代理 wheel 在 `releases/0.7.0/`，两个环境已装、服务已重启。Mini `releases/0.9.0-ai_ugv_car-9cd2b1f/`（主控台 0.9.0、Pi 代理 0.7.0 两个 wheel 和 `uv.lock`）。核验：沙箱内连接 `run/` 下的 socket 已用 `systemd-run` 同等限制实测可行；`ugv-navd` 经 `docker compose` 切换建图模式成功，容器 0.5.1 healthy、挂载新数据目录；地图列表 6 张；公网 `/health` 正常，新脚本已上线，未登录访问 `/api/v1/nav/maps` 为 401。门禁 362 项通过，覆盖率 83%；本机 Playwright 用假设备和假 `ugv-navd` 走完保存（含覆盖、非法名提示）、加载、设置位置、去这里、取消、圆盘按压，桌面 1440 与手机 390 无横向溢出、无脚本错误。
+- **回滚**：Mini 装回 `releases/0.8.1-ai_ugv_car-1e2303b/`；Pi 装回 `releases/0.6.1/`（两个环境）；`sudo systemctl disable --now ugv-navd`；ugv-nav 用 `UGV_NAV_VERSION=0.4.1` 重建容器、主机 `.venv` 装回 0.4.1，并把数据目录 `mv` 回 `/home/ws/deploy/ugv-nav/`（旧版挂载旧路径）。
+- **待实车验收（需用户在场、清场）**：网页建图并保存，与 `map_saver` 导出一致；加载地图后设置位置，激光点贴墙；5 次「去这里」成功；「取消导航」和急停 <0.5 s 停车。

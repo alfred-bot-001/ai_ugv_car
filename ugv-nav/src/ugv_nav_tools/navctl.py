@@ -52,6 +52,9 @@ Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 class Settings:
     deploy: Path = Path("/home/ws/deploy/ugv-nav")
     board: Path = Path("/home/ws/deploy/ai-tv-pet-agent/nav")
+    # Saved maps and patrol reports are household data, kept apart from the deployed
+    # application (2026-10-22, user request), like the Mini's workspace-agent/agent-data.
+    data: Path = Path("/home/ws/agent-data/ai-ugv-car")
     container: str = "ugv-nav"
 
     @property
@@ -60,11 +63,11 @@ class Settings:
 
     @property
     def maps(self) -> Path:
-        return self.deploy / "maps"
+        return self.data / "maps"
 
     @property
     def reports(self) -> Path:
-        return self.deploy / "reports"
+        return self.data / "reports"
 
 
 def map_name(value: str) -> str:
@@ -219,7 +222,14 @@ class NavCtl:
         (self.settings.compose_dir / ".env").write_text(
             mode_env(mapping=mapping, map_file=map_file, keepout=keepout)
         )
+        self.ensure_data()
         self.compose("up", "-d", "--force-recreate")
+
+    def ensure_data(self) -> None:
+        """Private data folders; docker would create missing bind mounts as root."""
+        for folder in (self.settings.data, self.settings.maps, self.settings.reports):
+            folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+            folder.chmod(0o700)
 
     def save(self, name: str) -> None:
         self.ros(
