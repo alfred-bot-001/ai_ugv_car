@@ -61,6 +61,16 @@ def test_wheels_hardware_gate_and_malformed_input() -> None:
         Stick.model_validate({**stick.model_dump(), "angle": 90})
 
 
+def test_stick_speed_defaults_to_010_and_stays_within_the_joystick_band() -> None:
+    base = {"target": "wheels", "x": 0, "y": 1, "lease": "l" * 16, "challenge": "c" * 16}
+    assert Stick.model_validate({**base, "sequence": 1}).speed == 0.10
+    assert Stick.model_validate({**base, "sequence": 1, "speed": 0.18}).speed == 0.18
+    assert Stick.model_validate({**base, "sequence": 1, "speed": 0.07}).speed == 0.07
+    for speed in (0.19, 0.06, 0, -0.1, float("nan")):
+        with pytest.raises(ValidationError):
+            Stick.model_validate({**base, "sequence": 1, "speed": speed})
+
+
 def test_telemetry_resynchronizes_and_rejects_corrupt_values() -> None:
     assert parse_telemetry(b'boot noise\xff{"T":1001,"L":0,"R":0,"v":12.2}') == {
         "T": 1001,

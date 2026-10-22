@@ -95,6 +95,21 @@ def test_online_protocol_control_and_media(tmp_path: Path, video_protocol: str) 
                     }
                 )
                 assert control.receive_json()["ok"]
+                control.send_json(
+                    {
+                        "target": "wheels",
+                        "x": 0,
+                        "y": 1,
+                        "lease": "test-valid-lease",
+                        "challenge": "test-valid-challenge",
+                        "sequence": 2,
+                        "speed": 0.15,
+                    }
+                )
+                reply = control.receive_json()
+                while "ok" not in reply:  # challenge frames interleave with results
+                    reply = control.receive_json()
+                assert reply["ok"]
             for action in ("stop", "estop", "reset"):
                 assert client.post("/api/v1/control/" + action, headers=headers).status_code == 200
             assert client.post("/api/v1/control/unknown", headers=headers).status_code == 404
@@ -125,4 +140,5 @@ def test_online_protocol_control_and_media(tmp_path: Path, video_protocol: str) 
             assert client.post("/api/v1/auth/logout", headers=headers).status_code == 200
             stop.set()
         thread.join(timeout=0.5)
-        assert any(command["action"] == "stick" for command in commands)
+        sticks = [command["args"] for command in commands if command["action"] == "stick"]
+        assert [stick["speed"] for stick in sticks] == [0.1, 0.15]

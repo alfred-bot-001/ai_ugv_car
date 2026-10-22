@@ -148,8 +148,10 @@ class Board:
             if self.guard.gimbal_verified:
                 self.write({"T": 135})
 
-    def move(self, stick: Stick, maximum: float = 0.10) -> None:
-        """maximum is the T1 ceiling: 0.10 for the web joystick, higher only for nav.py."""
+    def move(self, stick: Stick, maximum: float | None = None) -> None:
+        """T1 ceiling: the stick's own speed (web slider, at most 0.18) unless nav.py overrides."""
+        if maximum is None:
+            maximum = stick.speed
         with self.lock:
             self.load_evidence()
             health_error = self.health_error()

@@ -290,6 +290,27 @@ def test_joystick_stays_at_010_while_nav_may_reach_018(rig: tuple[NavBridge, Moc
     nav.board.stop()
 
 
+def test_joystick_speed_field_raises_the_wheel_ceiling_up_to_018(
+    rig: tuple[NavBridge, Mock],
+) -> None:
+    nav, uart = rig
+    guard = nav.board.guard
+    guard.heartbeat()
+    lease = nav.board.acquire()
+    common = {"target": "wheels", "lease": lease}
+    nav.board.move(Stick(x=0, y=1, challenge=guard.challenge(), sequence=1, speed=0.18, **common))
+    assert wheel_writes(uart)[-1] == {"T": 1, "L": 0.18, "R": 0.18}
+    nav.board.move(Stick(x=0, y=-1, challenge=guard.challenge(), sequence=2, speed=0.07, **common))
+    assert wheel_writes(uart)[-1] == {"T": 1, "L": -0.07, "R": -0.07}
+    # The explicit nav ceiling still wins over the stick field.
+    nav.board.move(
+        Stick(x=0, y=1, challenge=guard.challenge(), sequence=3, speed=0.07, **common),
+        maximum=PWM_LIMIT,
+    )
+    assert wheel_writes(uart)[-1] == {"T": 1, "L": PWM_LIMIT, "R": PWM_LIMIT}
+    nav.board.stop()
+
+
 def test_runaway_threshold_sits_above_nav_ceiling(rig: tuple[NavBridge, Mock]) -> None:
     board = rig[0].board
     assert PWM_LIMIT < RUNAWAY_SPEED
