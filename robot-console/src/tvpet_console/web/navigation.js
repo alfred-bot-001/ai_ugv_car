@@ -17,7 +17,7 @@ const logKeys=new Set();
 let tool='view',arrow=null,pendingTarget=null,maps=[],mapsLoaded=false,mapsLoading=false;
 let jobSeen=false,lastJobKey='',overwriteName='',dialogPending=null;
 // Wheel joystick (same lease/challenge protocol as the dashboard).
-let controlSocket=null,press=null,pressGeneration=0,controlSequence=0,challenge='',lastChallenge='',lease='',pressTimer=null;
+let controlSocket=null,press=null,pressGeneration=0,controlSequence=0,challenge='',lastChallenge='',lease='';
 const TOOL_HINT={view:'拖动平移，滚轮或双指缩放',pose:'在地图上按住老三所在的位置，朝车头方向拖出箭头再松开',goal:'在地图上按住目标点，拖出到达后的朝向再松开（直接点一下也可以）'};
 
 function toast(message){$('#toast').textContent=message;$('#toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').hidden=true,6000);}
@@ -326,10 +326,10 @@ async function beginStick(element,event){
   if(element.getAttribute('aria-disabled')==='true'){toast($('#feedback-wheels').textContent||'现在不能遥控');return;}
   if(press)return;event.preventDefault();const generation=++pressGeneration;press={x:0,y:0};
   if(event.pointerId!=null){element.setPointerCapture(event.pointerId);positionStick(element,event);}
-  try{const result=await(await api('control/lease')).json();if(generation!==pressGeneration||!press){await api('control/stop');return;}lease=result.lease;lastChallenge='';pressTimer=setTimeout(releaseStick,1900);}
+  try{const result=await(await api('control/lease')).json();if(generation!==pressGeneration||!press){await api('control/stop');return;}lease=result.lease;lastChallenge='';}
   catch(error){toast(error.message);releaseStick();}
 }
-function releaseStick(){const had=!!press||!!lease;pressGeneration++;press=null;lease='';clearTimeout(pressTimer);$('#stick-wheels .stick-knob').style.transform='translate(0,0)';if(had&&csrf)api('control/stop').catch(()=>{});}
+function releaseStick(){const had=!!press||!!lease;pressGeneration++;press=null;lease='';$('#stick-wheels .stick-knob').style.transform='translate(0,0)';if(had&&csrf)api('control/stop').catch(()=>{});}
 {
   const element=$('#stick-wheels');
   element.addEventListener('pointerdown',e=>beginStick(element,e));

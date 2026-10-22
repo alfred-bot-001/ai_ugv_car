@@ -157,7 +157,9 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[NavBr
     os.chmod(evidence, 0o600)
     board = Board("test-uart", Guard(), evidence)
     board.open()
-    time.sleep(0.05)
+    deadline = time.monotonic() + 2
+    while "v" not in board.telemetry and time.monotonic() < deadline:
+        time.sleep(0.01)  # the reader thread parses the first frame; slow under load
     nav_root = tmp_path / "nav"
     nav_root.mkdir()
     try:
