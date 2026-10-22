@@ -372,3 +372,12 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **部署**：rebase 到 main `43fc6d4`（另一会话的速度滑杆，Pi 0.6.1 / Mini 0.8.1）之上，本次版本已包含它。ugv-nav 源码备份 `backups/20261022-pre-0.5.0/src.tgz`，构建日志 `build-0.5.0.log`、`build-0.5.1.log`，镜像 0.5.0、0.5.1，主机 `.venv` 0.5.1。Pi 代理 wheel 在 `releases/0.7.0/`，两个环境已装、服务已重启。Mini `releases/0.9.0-ai_ugv_car-9cd2b1f/`（主控台 0.9.0、Pi 代理 0.7.0 两个 wheel 和 `uv.lock`）。核验：沙箱内连接 `run/` 下的 socket 已用 `systemd-run` 同等限制实测可行；`ugv-navd` 经 `docker compose` 切换建图模式成功，容器 0.5.1 healthy、挂载新数据目录；地图列表 6 张；公网 `/health` 正常，新脚本已上线，未登录访问 `/api/v1/nav/maps` 为 401。门禁 362 项通过，覆盖率 83%；本机 Playwright 用假设备和假 `ugv-navd` 走完保存（含覆盖、非法名提示）、加载、设置位置、去这里、取消、圆盘按压，桌面 1440 与手机 390 无横向溢出、无脚本错误。
 - **回滚**：Mini 装回 `releases/0.8.1-ai_ugv_car-1e2303b/`；Pi 装回 `releases/0.6.1/`（两个环境）；`sudo systemctl disable --now ugv-navd`；ugv-nav 用 `UGV_NAV_VERSION=0.4.1` 重建容器、主机 `.venv` 装回 0.4.1，并把数据目录 `mv` 回 `/home/ws/deploy/ugv-nav/`（旧版挂载旧路径）。
 - **待实车验收（需用户在场、清场）**：网页建图并保存，与 `map_saver` 导出一致；加载地图后设置位置，激光点贴墙；5 次「去这里」成功；「取消导航」和急停 <0.5 s 停车。
+
+## 2026-10-22 按住即持续控制与地图页控制一起上线（Mini 0.9.1 / Pi 0.7.1）
+
+应「摇杆回弹和速度调整」会话转达的用户要求：`feat/map-controls` 变基到 main `2dede7a`，地图页的底盘圆盘同样去掉 1.9 秒自动归位计时器，帮助文字改为「按住多久走多久，松手即停」；松手、失焦、页面切后台、断线仍会停车。`test_nav.py` 的测试夹具原来固定等 50 ms 遥测，机器忙时偶发 `KeyError: 'v'`，改为等到第一帧遥测（最多 2 秒）。
+
+- **验证**：门禁 363 项通过，覆盖率 83%，前端 `.mjs` 测试全部通过。公网 `app.js`、`navigation.js` 都已不含 1900 ms 计时器。
+- **部署**：Pi 先停容器，`releases/0.7.1/` 装进 `.venv` 和 `pose-venv`（`Guard.acquire` 的截止为无穷大已确认），重启服务，再经 `ugv-navd` 重新进入建图模式（新建图，之前没有未保存的地图）。Mini `releases/0.9.1-ai_ugv_car-f0dc259/`（主控台 0.9.1、Pi 代理 0.7.1 和 `uv.lock`）。核验：`/health` `agent_online: true`；Pi 代理对外 5 条连接（控制、视频、音频、地图、前置）；导航中继已连接；`arm.json` 为关闭。全程未发运动指令。
+- **回滚**：Mini 装回 `releases/0.9.0-ai_ugv_car-9cd2b1f/`，Pi 装回 `releases/0.7.0/`（两个环境）后重启服务；恢复 2 秒预算需要同时回到 0.8.1 / 0.6.1 那一版的 `Guard`。
+- **待验收（需用户在场、清场）**：长按前进后松手、切后台、断网各停车一次；首次用 0.18 速度试驾。
