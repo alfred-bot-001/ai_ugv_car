@@ -25,4 +25,9 @@ const gimbal = stickMessage({target: 'gimbal', x: 0, y: 1}, 'lease-x', 'chal-y',
 assert.equal('speed' in gimbal, false);
 assert.equal(gimbal.sequence, 8);
 
+// No auto-release timer: holding the stick drives until the pointer is released.
+assert.equal(source.includes('setTimeout(releaseStick'), false);
+const html = fs.readFileSync(new URL('../src/tvpet_console/web/dashboard.html', import.meta.url), 'utf8');
+assert.equal(html.includes('每次最长 2 秒'), false);
+
 console.log('speed frontend ok');

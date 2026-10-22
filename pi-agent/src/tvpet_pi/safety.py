@@ -48,10 +48,13 @@ class Guard:
     def acquire(self) -> str:
         if self.estopped or self.lease:
             raise ValueError("急停锁定或已有控制租约")
-        now = self.clock()
         self.lease = secrets.token_urlsafe(24)
-        self.lease_deadline = now + 10
-        self.press_deadline = now + 2
+        # 2026-10-22, user decision: no per-press or per-lease time budget; holding the
+        # stick drives until release. Revocation still comes from the single-use 0.45 s
+        # challenge, the 0.6 s heartbeat, the firmware 300 ms timeout and every explicit
+        # stop. nav.py overwrites both deadlines with its bounded arm session.
+        self.lease_deadline = math.inf
+        self.press_deadline = math.inf
         self.sequence = 0
         self.challenges.clear()
         return self.lease

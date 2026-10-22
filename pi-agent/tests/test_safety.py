@@ -45,7 +45,30 @@ def test_guard_stale_replay_press_and_disconnect() -> None:
     guard.acquire()
     now[0] += 2.01
     guard.heartbeat()
+    assert not guard.expired()
+
+
+def test_held_lease_keeps_driving_for_as_long_as_heartbeats_and_challenges_arrive() -> None:
+    # 2026-10-22, user decision: no per-press time budget, holding the stick drives
+    # until release. Stale heartbeats and used challenges still revoke within 0.6 s.
+    now = [500.0]
+    guard = Guard(lambda: now[0])
+    guard.wheels_verified = True
+    guard.heartbeat()
+    lease = guard.acquire()
+    for sequence in range(1, 1201):  # 10 minutes at 2 commands per second
+        now[0] += 0.5
+        guard.heartbeat()
+        stick = Stick(
+            target="wheels", x=0, y=1, lease=lease, challenge=guard.challenge(), sequence=sequence
+        )
+        assert guard.accept(stick) == (0, 1)
+        assert not guard.expired()
+    now[0] += 0.61
     assert guard.expired()
+    late = stick.model_copy(update={"challenge": guard.challenge(), "sequence": 9999})
+    with pytest.raises(ValueError):
+        guard.accept(late)
 
 
 def test_wheels_hardware_gate_and_malformed_input() -> None:
