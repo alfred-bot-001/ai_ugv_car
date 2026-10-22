@@ -91,7 +91,7 @@ def test_safety_stop_reaches_the_map_log(tmp_path: Path) -> None:
     assert runtime.nav is not None and runtime.nav_stream is not None
     runtime.nav.halt("stall_body")
     meta = parse_packet(runtime.nav_stream.cache.logs[-1])[1]
-    assert meta["level"] == "WARN" and meta["text"] == "安全停车：stall_body"
+    assert meta["level"] == "WARN" and meta["text"] == "已停车：车轮在转但车没动"
     agent = parse_packet(runtime.nav_agent_packet())[1]
     assert agent["fault"]["reason"] == "stall_body" and agent["relay"] is False
     runtime.nav.notify = lambda reason: 1 / 0  # a broken listener never breaks the stop

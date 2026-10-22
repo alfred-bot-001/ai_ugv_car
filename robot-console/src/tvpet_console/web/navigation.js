@@ -1,6 +1,8 @@
 "use strict";
-// Map page: live map, scan, pose, path, camera, status and logs. Read-only apart from
-// the emergency stop; all data arrives through the Mini (/ws/nav, /ws/video, /api).
+// Map page: live map, scan, pose, path, camera, status and logs, plus the controls:
+// mapping, saving, loading a map, setting the pose, "go here", cancel and the wheel
+// joystick. Everything goes through the Mini (/ws/nav, /ws/control, /api); the car's
+// ugv-navd runs the commands and holds any motion window. Motion needs a confirmation.
 const $=selector=>document.querySelector(selector);
 const ROBOT_RADIUS=0.17,POSE_STALE_S=3,TRAIL_MAX=300,LOG_MAX=400;
 const MAP_COLORS=[[251,252,250,255],[38,58,50,255],[0,0,0,0]];
@@ -11,6 +13,12 @@ const nav={map:null,mapImage:null,pose:null,trail:[],scan:[],plan:[],state:null,
 let view={cx:0,cy:0,scale:60,width:0,height:0},follow=true,fitPending=true,dirty=true,dpr=1;
 const layers={scan:true,trail:true,plan:true,grid:false};
 const logKeys=new Set();
+// Controls: the active map tool, a press-and-drag arrow, the target awaiting confirmation.
+let tool='view',arrow=null,pendingTarget=null,maps=[],mapsLoaded=false,mapsLoading=false;
+let jobSeen=false,lastJobKey='',overwriteName='',dialogPending=null;
+// Wheel joystick (same lease/challenge protocol as the dashboard).
+let controlSocket=null,press=null,pressGeneration=0,controlSequence=0,challenge='',lastChallenge='',lease='',pressTimer=null;
+const TOOL_HINT={view:'拖动平移，滚轮或双指缩放',pose:'在地图上按住老三所在的位置，朝车头方向拖出箭头再松开',goal:'在地图上按住目标点，拖出到达后的朝向再松开（直接点一下也可以）'};
 
 function toast(message){$('#toast').textContent=message;$('#toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').hidden=true,6000);}
 async function api(path,body={}){
@@ -76,6 +84,22 @@ function drawRobot(pose,stale){
   const tip=[sx+c*r*1.35,sy-s*r*1.35],left=[sx+(-s)*r*0.55,sy-(c)*r*0.55],right=[sx-(-s)*r*0.55,sy+(c)*r*0.55];
   context.beginPath();context.moveTo(...tip);context.lineTo(...left);context.lineTo(...right);context.closePath();context.fillStyle=stale?'#7d8a84':'#16705b';context.fill();
 }
+// A target pose: dot, footprint circle and heading arrow.
+function drawTarget(p,color){
+  const [sx,sy]=worldToScreen(view,p.x,p.y),len=Math.max(26,0.35*view.scale),c=Math.cos(p.yaw),s=Math.sin(p.yaw),ex=sx+c*len,ey=sy-s*len,head=10,spread=0.5;
+  context.strokeStyle=color;context.fillStyle=color;
+  context.beginPath();context.arc(sx,sy,Math.max(8,ROBOT_RADIUS*view.scale),0,Math.PI*2);context.setLineDash([4,4]);context.lineWidth=1.5;context.stroke();context.setLineDash([]);
+  context.beginPath();context.arc(sx,sy,5,0,Math.PI*2);context.fill();
+  context.beginPath();context.moveTo(sx,sy);context.lineTo(ex,ey);context.lineWidth=3;context.stroke();
+  context.beginPath();context.moveTo(ex,ey);context.lineTo(ex-head*Math.cos(p.yaw-spread),ey+head*Math.sin(p.yaw-spread));context.lineTo(ex-head*Math.cos(p.yaw+spread),ey+head*Math.sin(p.yaw+spread));context.closePath();context.fill();
+}
+function activeGoal(){const job=nav.agent?.navd?.job;return job&&job.op==='goal'&&job.state==='running'&&job.detail&&Number.isFinite(job.detail.x)?job.detail:null;}
+// Without a drag: a goal faces away from the car, a pose keeps the current heading.
+function fallbackYaw(x,y){
+  const pose=nav.pose;if(!pose)return 0;
+  if(tool==='goal'&&Math.hypot(x-pose.x,y-pose.y)>0.05)return Math.atan2(y-pose.y,x-pose.x);
+  return pose.yaw;
+}
 function draw(){
   requestAnimationFrame(draw);resize();
   const stale=nav.pose&&!(ageOf(nav.pose.stamp)<POSE_STALE_S);
@@ -87,20 +111,32 @@ function draw(){
   if(layers.trail)polyline(nav.trail,'rgba(22,112,91,.38)',2);
   if(layers.plan)polyline(nav.plan,'#2a7de1',3,[8,5]);
   if(layers.scan&&nav.scan.length){context.fillStyle='#e0533d';const size=Math.max(2,Math.min(4,0.03*view.scale));for(const [x,y] of nav.scan){const [sx,sy]=worldToScreen(view,x,y);context.fillRect(sx-size/2,sy-size/2,size,size);}}
+  const goal=activeGoal();if(goal)drawTarget(goal,'#2a7de1');
+  if(pendingTarget)drawTarget(pendingTarget,pendingTarget.tool==='pose'?'#16705b':'#d9822b');
+  if(arrow)drawTarget(arrowPose(arrow.x0,arrow.y0,arrow.x1,arrow.y1,fallbackYaw(arrow.x0,arrow.y0),12/view.scale),tool==='pose'?'#16705b':'#d9822b');
   if(nav.pose)drawRobot(nav.pose,stale);
   const meters=scaleBar(view.scale);$('#map-scale i').style.width=Math.round(meters*view.scale)+'px';$('#map-scale b').textContent=meters>=1?meters+' m':Math.round(meters*100)+' cm';
 }
 function setFollow(value){follow=value;$('#follow').setAttribute('aria-pressed',String(value));dirty=true;}
 const pointers=new Map();let pinch=null;
 stage.addEventListener('wheel',e=>{e.preventDefault();const rect=stage.getBoundingClientRect();view=zoomAt(view,e.clientX-rect.left,e.clientY-rect.top,Math.exp(-e.deltaY*0.0015));if(follow&&nav.pose)setFollow(false);dirty=true;},{passive:false});
-stage.addEventListener('pointerdown',e=>{stage.setPointerCapture(e.pointerId);pointers.set(e.pointerId,[e.clientX,e.clientY]);if(pointers.size===2){const [a,b]=[...pointers.values()];pinch={distance:Math.hypot(a[0]-b[0],a[1]-b[1])};}});
+function stagePoint(e){const rect=stage.getBoundingClientRect();return screenToWorld(view,e.clientX-rect.left,e.clientY-rect.top);}
+stage.addEventListener('pointerdown',e=>{
+  stage.setPointerCapture(e.pointerId);pointers.set(e.pointerId,[e.clientX,e.clientY]);
+  if(pointers.size===2){arrow=null;dirty=true;const [a,b]=[...pointers.values()];pinch={distance:Math.hypot(a[0]-b[0],a[1]-b[1])};}
+  else if(tool!=='view'&&pointers.size===1&&e.button===0){const [x,y]=stagePoint(e);arrow={id:e.pointerId,x0:x,y0:y,x1:x,y1:y};dirty=true;}
+});
 stage.addEventListener('pointermove',e=>{
   const previous=pointers.get(e.pointerId);if(!previous)return;pointers.set(e.pointerId,[e.clientX,e.clientY]);
+  if(arrow&&arrow.id===e.pointerId){[arrow.x1,arrow.y1]=stagePoint(e);dirty=true;return;}
   if(pointers.size===1){const dx=e.clientX-previous[0],dy=e.clientY-previous[1];if(Math.abs(dx)+Math.abs(dy)<1)return;setFollow(false);view={...view,cx:view.cx-dx/view.scale,cy:view.cy+dy/view.scale};dirty=true;}
   else if(pointers.size===2&&pinch){const [a,b]=[...pointers.values()],distance=Math.hypot(a[0]-b[0],a[1]-b[1]),rect=stage.getBoundingClientRect();if(distance>0&&pinch.distance>0){view=zoomAt(view,(a[0]+b[0])/2-rect.left,(a[1]+b[1])/2-rect.top,distance/pinch.distance);pinch.distance=distance;dirty=true;}}
 });
-for(const kind of ['pointerup','pointercancel','lostpointercapture'])stage.addEventListener(kind,e=>{pointers.delete(e.pointerId);if(pointers.size<2)pinch=null;});
-stage.addEventListener('dblclick',e=>{const rect=stage.getBoundingClientRect();view=zoomAt(view,e.clientX-rect.left,e.clientY-rect.top,1.6);dirty=true;});
+for(const kind of ['pointerup','pointercancel','lostpointercapture'])stage.addEventListener(kind,e=>{
+  pointers.delete(e.pointerId);if(pointers.size<2)pinch=null;
+  if(arrow&&arrow.id===e.pointerId){const done=arrow;arrow=null;dirty=true;if(kind==='pointerup')finishArrow(done);}
+});
+stage.addEventListener('dblclick',e=>{if(tool!=='view')return;const rect=stage.getBoundingClientRect();view=zoomAt(view,e.clientX-rect.left,e.clientY-rect.top,1.6);dirty=true;});
 $('#zoom-in').onclick=()=>{view=zoomAt(view,view.width/2,view.height/2,1.4);dirty=true;};
 $('#zoom-out').onclick=()=>{view=zoomAt(view,view.width/2,view.height/2,1/1.4);dirty=true;};
 $('#fit-map').onclick=()=>{if(nav.map){setFollow(false);view=fitView(view,mapBounds(nav.map));dirty=true;}else toast('还没有收到地图');};
@@ -129,11 +165,176 @@ function renderFacts(){
   const banner=$('#nav-banner');
   if(!lastStatus.online){banner.className='notice';banner.textContent='老三尚未连接或数据已过期，地图暂停更新。';}
   else if(!navSocket){banner.className='notice';banner.textContent='正在连接地图数据…';}
-  else if(agent&&!agent.relay){banner.className='notice';banner.textContent='导航容器没有运行（ugv-navctl mapping 或 localize 启动后这里会出现地图）。';}
+  else if(agent&&!agent.relay){banner.className='notice';banner.textContent=/^(running|starting)/.test(String(agent.navd?.container||''))?'导航容器正在启动，大约 30 秒后出现地图…':'导航容器没有运行。点右侧「开始建图」，或选一张已保存的地图「加载并定位」。';}
   else if(fault){banner.className='notice';banner.textContent=fault+'。需要重新授权后才能再动。';}
   else if(stale){banner.className='notice';banner.textContent='位姿数据中断，地图上显示的是最后已知位置。';}
+  else if(activeGoal()){banner.className='notice good';banner.textContent='老三正在自主导航去目标点（蓝色箭头）· 随时可点「取消导航」或「紧急停止」。';}
   else{banner.className='notice good';banner.textContent=(state?.mode==='mapping'?'建图中':'定位导航中')+' · 地图、激光和位置实时更新。';}
   $('#last-update').textContent=state?'导航数据 '+formatAge(stateAge):'等待数据';
+  renderControls();
+}
+
+// ---- controls
+function renderControls(){
+  const agent=nav.agent,navd=agent?.navd,online=!!lastStatus.online&&!!navSocket&&!!agent,job=navd?.job;
+  const busy=job?.state==='running',running=containerRunning(navd),navdUp=online&&!!navd?.online;
+  const container=containerText(online?navd:null);
+  $('#ctl-container').textContent=online?container.text:'—';$('#ctl-mode').textContent=online?navdModeText(navd):'—';
+  const badge=$('#container-badge');badge.textContent=!navdUp?'不可用':busy?'任务进行中':running?'可以操作':'未运行';badge.className='badge '+(navdUp&&running&&!busy?'':navdUp?'neutral':'warning');
+  const line=$('#ctl-job');line.textContent=!lastStatus.online?'老三离线':!navdUp?(navd?.error||'等待导航服务'):jobText(job,piNow());
+  line.className='job-line'+(busy?' running':!navdUp||job?.state==='failed'?' fault':job?.state==='ok'?' good':'');
+  const ready=navdUp&&!busy,mapping=running&&navd.mode==='mapping',localized=running&&navd.mode==='localization';
+  const fresh=!!nav.pose&&ageOf(nav.pose.stamp)<POSE_STALE_S;
+  $('#start-mapping').disabled=!ready;
+  $('#save-map').disabled=!(ready&&mapping&&nav.map&&agent.relay);
+  $('#localize').disabled=!(ready&&$('#map-select').value);
+  const can={view:true,pose:ready&&localized&&!!nav.map&&!!agent.relay,goal:ready&&running&&!!nav.map&&fresh};
+  for(const button of document.querySelectorAll('button[data-tool]'))button.disabled=!can[button.dataset.tool];
+  if(!can[tool])setTool('view');
+  $('#cancel-nav').disabled=!lastStatus.online;
+  if(navdUp){
+    const key=job?job.id+':'+job.state:'';
+    if(!jobSeen){jobSeen=true;lastJobKey=key;}
+    else if(key!==lastJobKey){lastJobKey=key;if(job&&job.state!=='running'){toast(jobText(job,NaN));if(job.op==='save'&&job.state==='ok')loadMaps();}dirty=true;}
+  }
+  const board=lastStatus.state?.board||{},telemetry=board.telemetry||{},driving=busy&&job.op==='goal';
+  const wheels=!!lastStatus.online&&board.wheels_ready&&!board.estopped;
+  $('#stick-wheels').setAttribute('aria-disabled',String(!wheels||driving));
+  const gate=$('#gate-wheels');gate.textContent=board.estopped?'急停锁定':driving?'导航中':wheels?'可以控制':!lastStatus.online?'设备离线':board.control_qualified?'等待硬件恢复':'硬件待检查';gate.className='badge '+(wheels&&!driving?'':'warning');
+  $('#feedback-wheels').textContent=driving?'正在自主导航；要手动开，先点「取消导航」。':wheels&&Number.isFinite(telemetry.L)?'左轮 '+telemetry.L.toFixed(3)+' / 右轮 '+telemetry.R.toFixed(3)+' m/s':board.gate_reason||'支持触摸、鼠标与方向键';
+  $('#reset-estop').hidden=!board.estopped;
+}
+function setTool(name){
+  if(name===tool&&!arrow)return;
+  tool=name;arrow=null;stage.dataset.tool=name;
+  for(const button of document.querySelectorAll('button[data-tool]'))button.setAttribute('aria-pressed',String(button.dataset.tool===name));
+  const hint=$('#tool-hint');hint.textContent=TOOL_HINT[name];hint.classList.toggle('active',name!=='view');
+  if(name!=='view'&&follow)setFollow(false);
+  dirty=true;
+}
+for(const button of document.querySelectorAll('button[data-tool]'))button.onclick=()=>setTool(button.dataset.tool===tool?'view':button.dataset.tool);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&tool!=='view'&&!$('#nav-dialog').open)setTool('view');});
+
+// A modal question; resolves to true / the typed text, or null when cancelled.
+function ask({title,text,confirm='确认',danger=false,input=null,validate=null}){
+  const dialog=$('#nav-dialog');if(dialog.open)dialog.close();
+  $('#nav-dialog-title').textContent=title;$('#nav-dialog-text').textContent=text;$('#nav-dialog-error').textContent='';
+  const field=$('#nav-dialog-field'),box=$('#nav-dialog-input'),ok=$('#nav-dialog-ok');
+  field.hidden=input==null;box.value=input??'';ok.textContent=confirm;ok.className=danger?'danger':'primary';
+  return new Promise(resolve=>{
+    dialogPending={resolve,validate,input:input!=null};dialog.showModal();
+    if(input!=null){box.focus();box.select();}else ok.focus();
+  });
+}
+$('#nav-dialog-form').addEventListener('submit',e=>{
+  e.preventDefault();const pending=dialogPending;if(!pending)return;
+  const value=pending.input?$('#nav-dialog-input').value.trim():true;
+  const error=pending.validate?pending.validate(value):'';
+  if(error){$('#nav-dialog-error').textContent=error;return;}
+  dialogPending=null;$('#nav-dialog').close();pending.resolve(value);
+});
+$('#nav-dialog-cancel').onclick=()=>$('#nav-dialog').close();
+$('#nav-dialog').addEventListener('close',()=>{const pending=dialogPending;dialogPending=null;pending?.resolve(null);});
+
+async function navCommand(body){return (await api('nav/command',body)).json();}
+async function guarded(button,callback){if(button.disabled)return;button.disabled=true;try{await callback();}catch(error){toast(error.message);}finally{renderControls();}}
+function resetMap(){mapGeneration++;nav.map=null;nav.mapImage=null;nav.trail=[];nav.scan=[];nav.plan=[];fitPending=true;$('#map-empty').hidden=false;dirty=true;}
+const fixed=(value,digits)=>Number(value.toFixed(digits));
+
+// What the map shows under a world point: free, wall, unknown or outside the map.
+function cellKind(x,y){
+  if(!nav.map||!nav.mapImage)return 'outside';
+  const cell=mapCell(nav.map,x,y);if(!cell)return 'outside';
+  const pixel=nav.mapImage.getContext('2d',{willReadFrequently:true}).getImageData(cell[0],cell[1],1,1).data;
+  return pixel[3]===0?'unknown':pixel[0]<128?'wall':'free';
+}
+async function finishArrow(done){
+  const kind=tool,target=arrowPose(done.x0,done.y0,done.x1,done.y1,fallbackYaw(done.x0,done.y0),12/view.scale);
+  pendingTarget={...target,tool:kind};dirty=true;
+  try{if(kind==='goal')await confirmGoal(target);else if(kind==='pose')await confirmPose(target);}
+  catch(error){toast(error.message);}
+  finally{pendingTarget=null;dirty=true;}
+}
+async function confirmGoal(target){
+  if(!nav.pose)throw new Error('还没有收到小车位置');
+  const plan=goalPlan(nav.pose,target);
+  if(plan.distance<0.1)throw new Error('目标离老三太近（不到 10 cm）');
+  const cell=cellKind(target.x,target.y);
+  const warning=cell==='wall'?'\n注意：目标点在障碍物上，很可能到不了。':cell==='free'?'':'\n注意：目标点在还没探索过的区域，可能规划不出路线。';
+  const ok=await ask({title:'让老三开到这里？',confirm:'出发',text:'直线约 '+plan.distance.toFixed(1)+' 米，预计 '+plan.seconds+' 秒左右。老三会自己规划路线，遇到障碍会绕开或停下；随时可以点「取消导航」或「紧急停止」。\n请确认周围没有人、宠物和容易碰倒的东西。'+warning});
+  if(!ok)return;
+  await navCommand({op:'goal',x:fixed(target.x,3),y:fixed(target.y,3),yaw:fixed(target.yaw,4)});
+  setTool('view');toast('老三出发了');
+}
+async function confirmPose(target){
+  const ok=await ask({title:'把老三的位置设在这里？',confirm:'设置位置',text:'箭头方向是老三车头的朝向。设好后看红色激光点是否贴着墙；对不上就再设一次。'});
+  if(!ok)return;
+  await navCommand({op:'pose',x:fixed(target.x,3),y:fixed(target.y,3),yaw:fixed(target.yaw,4)});
+  setTool('view');toast('位置已发送，定位几秒内会收敛');
+}
+$('#start-mapping').onclick=()=>guarded($('#start-mapping'),async()=>{
+  const navd=nav.agent?.navd,again=containerRunning(navd)&&navd.mode==='mapping';
+  const ok=await ask({title:again?'重新开始建图？':'开始建图？',confirm:again?'清空并重新建图':'开始建图',danger:again,
+    text:(again?'当前正在建的地图如果还没保存，会被清空。':'导航容器会重启进入建图模式，当前没保存的地图会丢失；已保存的地图不受影响。')+'\n老三不会自己动。启动大约 30 秒，之后用圆盘遥控它把房间走一遍，或在地图上点「去这里」。'});
+  if(!ok)return;
+  await navCommand({op:'mapping'});resetMap();toast('正在切换到建图模式，大约 30 秒后出现地图');
+});
+$('#save-map').onclick=()=>guarded($('#save-map'),async()=>{
+  overwriteName='';
+  const name=await ask({title:'保存地图',confirm:'保存',input:defaultMapName(new Date()),text:'给这张地图起个名字（字母、数字、- 或 _）。地图只保存在老三的 Pi 上。',
+    validate:value=>{if(!mapNameValid(value))return '只能用字母、数字、- 或 _，最多 64 个字符';if(maps.some(m=>m.name===value)&&overwriteName!==value){overwriteName=value;return '已有同名地图「'+value+'」，再点一次「保存」会覆盖它';}return '';}});
+  if(!name)return;
+  await navCommand({op:'save',map:name});toast('正在保存地图 '+name);
+});
+$('#localize').onclick=()=>guarded($('#localize'),async()=>{
+  const name=$('#map-select').value;if(!name)return;
+  const ok=await ask({title:'加载地图「'+name+'」？',confirm:'加载地图',text:'导航容器会重启并加载这张地图（大约 30 秒），正在建的地图如果没保存会丢失。\n加载后用地图下方的「设置位置」标出老三现在的位置和朝向。'});
+  if(!ok)return;
+  await navCommand({op:'localize',map:name});resetMap();toast('正在加载地图 '+name);
+});
+$('#cancel-nav').onclick=()=>{releaseStick();navCommand({op:'stop'}).then(reply=>toast(reply.navd_error?'已停车；导航服务没有响应：'+reply.navd_error:'已停车并取消导航')).catch(error=>toast(error.message));};
+
+// ---- saved maps
+async function loadMaps(){
+  if(mapsLoading)return;mapsLoading=true;
+  try{
+    const response=await fetch('/api/v1/nav/maps');if(response.status===401){stopAll();location.replace('/');return;}
+    const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'读取地图列表失败');
+    maps=Array.isArray(data.maps)?data.maps:[];mapsLoaded=true;renderMapList();
+  }catch(error){if(!maps.length)$('#map-select').replaceChildren(new Option(error.message||'读取地图列表失败',''));}
+  finally{mapsLoading=false;renderControls();}
+}
+function renderMapList(){
+  const select=$('#map-select'),current=select.value||nav.agent?.navd?.map||'';
+  select.replaceChildren(...(maps.length?maps.map(m=>{const option=new Option(mapOptionText(m),m.name);option.disabled=!!m.error;return option;}):[new Option('还没有保存的地图','')]));
+  if(maps.some(m=>m.name===current&&!m.error))select.value=current;
+}
+$('#refresh-maps').onclick=()=>loadMaps();
+$('#map-select').onchange=()=>renderControls();
+
+// ---- wheel joystick
+function connectControl(){
+  if(stopped||controlSocket)return;
+  const ws=socket('control');controlSocket=ws;
+  ws.onmessage=e=>{const data=JSON.parse(e.data);if(data.error){toast(data.error);releaseStick();return;}if(data.challenge&&data.lease===lease){challenge=data.challenge;if(press&&lease&&challenge!==lastChallenge){lastChallenge=challenge;ws.send(JSON.stringify({target:'wheels',x:press.x,y:press.y,lease,challenge,sequence:++controlSequence}));}}};
+  ws.onclose=()=>{if(controlSocket===ws)controlSocket=null;releaseStick();if(!stopped)setTimeout(connectControl,1500);};
+}
+function positionStick(element,event){const rect=element.getBoundingClientRect(),radius=rect.width/2-30;let x=(event.clientX-rect.left-rect.width/2)/radius,y=-(event.clientY-rect.top-rect.height/2)/radius;const scale=Math.max(1,Math.hypot(x,y));x/=scale;y/=scale;press.x=Math.abs(x)<.1?0:x;press.y=Math.abs(y)<.1?0:y;element.querySelector('.stick-knob').style.transform=`translate(${x*radius}px,${-y*radius}px)`;}
+async function beginStick(element,event){
+  if(element.getAttribute('aria-disabled')==='true'){toast($('#feedback-wheels').textContent||'现在不能遥控');return;}
+  if(press)return;event.preventDefault();const generation=++pressGeneration;press={x:0,y:0};
+  if(event.pointerId!=null){element.setPointerCapture(event.pointerId);positionStick(element,event);}
+  try{const result=await(await api('control/lease')).json();if(generation!==pressGeneration||!press){await api('control/stop');return;}lease=result.lease;lastChallenge='';pressTimer=setTimeout(releaseStick,1900);}
+  catch(error){toast(error.message);releaseStick();}
+}
+function releaseStick(){const had=!!press||!!lease;pressGeneration++;press=null;lease='';clearTimeout(pressTimer);$('#stick-wheels .stick-knob').style.transform='translate(0,0)';if(had&&csrf)api('control/stop').catch(()=>{});}
+{
+  const element=$('#stick-wheels');
+  element.addEventListener('pointerdown',e=>beginStick(element,e));
+  element.addEventListener('pointermove',e=>{if(press)positionStick(element,e);});
+  for(const kind of ['pointerup','pointercancel','lostpointercapture'])element.addEventListener(kind,releaseStick);
+  element.addEventListener('keydown',async e=>{if(!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)||e.repeat)return;await beginStick(element,e);if(press){press.x=e.key==='ArrowLeft'?-1:e.key==='ArrowRight'?1:0;press.y=e.key==='ArrowUp'?1:e.key==='ArrowDown'?-1:0;}});
+  element.addEventListener('keyup',releaseStick);element.addEventListener('blur',releaseStick);
 }
 async function poll(){
   if(stopped)return;
@@ -148,6 +349,8 @@ async function poll(){
   setText('#status-front',!online||!front?'—':{disabled:'未配置',fault:'故障：'+(front.error||'无法读取'),active:'采集中',available:'已连接',unknown:'未找到设备'}[front.state]||'未知',front?.state==='fault'||front?.state==='unknown'?'fault':'');
   if(!online&&videoSocket)stopVideo();
   if(online&&!navSocket)connectNav();
+  if(online&&!mapsLoaded)loadMaps();
+  if(!online)releaseStick();
   setTimeout(poll,1000);
 }
 
@@ -198,14 +401,16 @@ for(const button of document.querySelectorAll('[data-source]'))button.onclick=()
 };
 
 // ---- page lifecycle
-function stopAll(){stopped=true;stopVideo();clearTimeout(navRetry);if(navSocket){const old=navSocket;navSocket=null;old.close();}}
-$('#estop').onclick=()=>api('control/estop').then(()=>toast('老三已锁定急停')).catch(error=>toast(error.message));
+function stopAll(){stopped=true;releaseStick();stopVideo();clearTimeout(navRetry);if(navSocket){const old=navSocket;navSocket=null;old.close();}if(controlSocket){const old=controlSocket;controlSocket=null;old.close();}}
+$('#estop').onclick=()=>{releaseStick();api('control/estop').then(()=>toast('老三已锁定急停')).catch(error=>toast(error.message));};
+$('#reset-estop').onclick=()=>api('control/reset').then(()=>toast('急停已解除')).catch(error=>toast(error.message));
+window.addEventListener('blur',releaseStick);
 $('#logout').onclick=async()=>{const button=$('#logout');button.disabled=true;stopAll();try{await api('auth/logout');}catch(error){toast(error.message);}location.replace('/');};
-document.addEventListener('visibilitychange',()=>{if(document.hidden){stopVideo();clearTimeout(navRetry);if(navSocket){const old=navSocket;navSocket=null;old.close();}}else if(!stopped)connectNav();});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){releaseStick();stopVideo();clearTimeout(navRetry);if(navSocket){const old=navSocket;navSocket=null;old.close();}}else if(!stopped)connectNav();});
 window.addEventListener('pagehide',stopAll);
 window.addEventListener('resize',()=>{dirty=true;});
 (async()=>{
   try{const response=await fetch('/api/v1/auth/session');if(!response.ok){location.replace('/');return;}csrf=(await response.json()).csrf;}
   catch{toast('无法连接 Mini 服务');return;}
-  resize();requestAnimationFrame(draw);poll();connectNav();setInterval(renderFacts,500);renderFacts();
+  resize();requestAnimationFrame(draw);poll();connectNav();connectControl();setInterval(renderFacts,500);renderFacts();
 })();

@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
+from tvpet_pi.nav_ops import NavCommand
 from tvpet_pi.protocol import AGENT_PROTOCOL, Credentials, PasswordChange, SpeechRequest, Stick
 
 from .annotations import (
@@ -156,10 +157,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(403, "会话校验失败，请重新登录")
         return current
 
-    async def rpc(action: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def rpc(
+        action: str, args: dict[str, Any] | None = None, *, timeout: float = 2, event: str = ""
+    ) -> dict[str, Any]:
         try:
-            result = await gateway.rpc(action, args)
-            store.audit(f"device.{action}")
+            result = await gateway.rpc(action, args, timeout=timeout)
+            store.audit(event or f"device.{action}")
             return result
         except (ValueError, TimeoutError) as error:
             raise HTTPException(409, str(error)) from error
@@ -489,6 +492,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result = await rpc(action)
         control_owner = ""
         return result
+
+    @app.post("/api/v1/nav/command")
+    async def nav_command(request: Request, body: NavCommand) -> dict[str, Any]:
+        """Map page controls; the car's ugv-navd runs them and holds any motion window."""
+        await identity(request, mutate=True)
+        if body.op in ("status", "maps"):
+            raise HTTPException(404, "未知导航操作")
+        result = await rpc("nav", body.payload(), timeout=4, event=f"nav.{body.op}")
+        return dict(result.get("nav") or {})
+
+    @app.get("/api/v1/nav/maps")
+    async def nav_maps(request: Request) -> dict[str, Any]:
+        await identity(request)
+        try:
+            result = await gateway.rpc("nav", {"op": "maps"}, timeout=4)
+        except (ValueError, TimeoutError) as error:
+            raise HTTPException(409, str(error) or "读取地图列表超时") from error
+        maps = (result.get("nav") or {}).get("maps")
+        return {"maps": maps if isinstance(maps, list) else []}
 
     @app.post("/api/v1/speech/say")
     async def say(request: Request, body: SpeechRequest) -> dict[str, Any]:

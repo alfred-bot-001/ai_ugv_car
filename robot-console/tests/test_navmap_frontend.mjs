@@ -6,7 +6,9 @@ import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../src/tvpet_console/web/navmap.js', import.meta.url), 'utf8');
 const names = ['parseNavPacket', 'worldToScreen', 'screenToWorld', 'zoomAt', 'mapBounds', 'fitView',
-  'recolorMap', 'formatAge', 'areaText', 'healthText', 'faultText', 'modeText', 'logLevelClass', 'scaleBar'];
+  'recolorMap', 'formatAge', 'areaText', 'healthText', 'faultText', 'modeText', 'logLevelClass', 'scaleBar',
+  'arrowPose', 'mapCell', 'goalPlan', 'defaultMapName', 'mapNameValid', 'containerText', 'containerRunning',
+  'navdModeText', 'jobText', 'mapOptionText'];
 const context = {TextDecoder, DataView, Uint8Array, JSON, Math, Number, Date, String, Array};
 vm.runInNewContext(source + '\n' + names.map(n => `this.${n}=${n};`).join(''), context);
 const h = context;
@@ -78,3 +80,43 @@ assert.equal(h.logLevelClass('INFO'), 'info');
 assert.equal(h.scaleBar(60), 2);
 assert.equal(h.scaleBar(300), 0.2);
 console.log('navmap ok');
+
+// Map page controls: a press-and-drag gives position and heading; a click keeps the yaw.
+const dragged = h.arrowPose(1, 2, 1, 3, 0.4, 0.2);
+assert.deepEqual([dragged.x, dragged.y], [1, 2]);
+assert.ok(Math.abs(dragged.yaw - Math.PI / 2) < 1e-9);
+assert.equal(h.arrowPose(1, 2, 1.05, 2, 0.4, 0.2).yaw, 0.4);
+
+// Cells: the PNG's first row is the map's top (highest y); outside gives null.
+const grid = {origin: [-1, -2], resolution: 0.5, width: 4, height: 6};
+assert.deepEqual([...h.mapCell(grid, -1, -2)], [0, 5]);
+assert.deepEqual([...h.mapCell(grid, 0.9, 0.99)], [3, 0]);
+assert.equal(h.mapCell(grid, 1.01, 0), null);
+assert.equal(h.mapCell(grid, 0, -2.01), null);
+
+const plan = h.goalPlan({x: 0, y: 0}, {x: 3, y: 4});
+assert.equal(plan.distance, 5);
+assert.equal(plan.seconds, 70);
+assert.equal(h.goalPlan({x: 0, y: 0}, {x: 0, y: 0}).seconds, 5);
+
+assert.equal(h.defaultMapName(new Date(2026, 9, 22, 9, 5)), 'room-20261022-0905');
+assert.ok(h.mapNameValid('room-20261022-0905') && h.mapNameValid('a_b'));
+assert.ok(!h.mapNameValid('') && !h.mapNameValid('客厅') && !h.mapNameValid('a b') && !h.mapNameValid('x'.repeat(65)));
+
+assert.equal(h.containerText(null).text, '等待 Pi 代理');
+assert.equal(h.containerText({online: false}).level, 'fault');
+assert.equal(h.containerText({online: true, container: 'running healthy'}).text, '运行中');
+assert.equal(h.containerText({online: true, container: 'running starting'}).text, '启动中');
+assert.equal(h.containerText({online: true, container: 'exited'}).text, '已停止');
+assert.ok(h.containerRunning({online: true, container: 'running unhealthy'}));
+assert.ok(!h.containerRunning({online: true, container: 'exited'}) && !h.containerRunning(null));
+assert.equal(h.navdModeText({online: true, mode: 'localization', map: 'room'}), '定位 · room');
+assert.equal(h.navdModeText({online: true, mode: 'mapping'}), '建图');
+
+assert.equal(h.jobText(null, 0), '还没有任务');
+assert.equal(h.jobText({op: 'save', state: 'running', started: 100, detail: {map: 'room'}}, 112), '正在保存地图 room…（12 秒）');
+assert.equal(h.jobText({op: 'goal', state: 'ok', message: '已到达，误差 4 cm', finished: 100}, 101), '导航去目标点：已到达，误差 4 cm（刚刚）');
+assert.equal(h.jobText({op: 'goal', state: 'cancelled', finished: 100}, NaN), '导航去目标点：已取消');
+assert.equal(h.faultText({reason: 'operator_cancel'}), '已在网页上取消导航并停车');
+assert.ok(h.mapOptionText({name: 'room', area_m2: 12.34, modified: 1761100000}).startsWith('room · 12.3 m² · '));
+assert.equal(h.mapOptionText({name: 'bad', error: 'x'}), 'bad · 无法读取');

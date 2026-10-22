@@ -4,6 +4,10 @@
 
 const NAV_PALETTE=[[245,247,244],[32,52,45],[205,211,208]];
 const NAV_MIN_SCALE=8,NAV_MAX_SCALE=600;
+// Nav2 cruises at up to 0.10 m/s (bridge MAX_LINEAR 0.12); real runs average lower.
+const NAV_AVERAGE_SPEED=0.08;
+const NAV_OP_TEXT={mapping:'开始建图',save:'保存地图',localize:'加载地图定位',pose:'设置当前位置',goal:'导航去目标点'};
+const NAV_OP_RUNNING={mapping:'正在切换到建图模式',save:'正在保存地图',localize:'正在加载地图',pose:'正在设置位置',goal:'正在导航去目标点'};
 
 function parseNavPacket(buffer){
   const bytes=new Uint8Array(buffer);
@@ -88,6 +92,7 @@ function faultText(fault){
   const reason=String(fault.reason);
   if(reason==='stall_body')return '车轮在转但车没动，已安全停车';
   if(reason==='localization_lost')return '定位丢失，已安全停车';
+  if(reason==='operator_cancel')return '已在网页上取消导航并停车';
   const wheel=reason.match(/^stall_wheel_(left|right)$/);
   if(wheel)return (wheel[1]==='left'?'左':'右')+'轮转不动，已安全停车';
   return '安全停车：'+reason;
@@ -110,4 +115,72 @@ function scaleBar(scale,maxPixels=120){
   const raw=maxPixels/scale,power=10**Math.floor(Math.log10(raw));
   for(const step of [5,2,1])if(step*power<=raw)return step*power;
   return power;
+}
+
+// ---- map page controls
+
+// The pose a press at (x0, y0) dragged to (x1, y1) describes; a short drag keeps `yaw`.
+function arrowPose(x0,y0,x1,y1,yaw,minDrag){
+  const dx=x1-x0,dy=y1-y0;
+  return {x:x0,y:y0,yaw:Math.hypot(dx,dy)>=minDrag?Math.atan2(dy,dx):yaw};
+}
+
+// [column, row] of the north-up map image under world (x, y); null outside the map.
+function mapCell(meta,x,y){
+  const col=Math.floor((x-meta.origin[0])/meta.resolution),up=Math.floor((y-meta.origin[1])/meta.resolution);
+  if(!(col>=0&&up>=0&&col<meta.width&&up<meta.height))return null;
+  return [col,meta.height-1-up];
+}
+
+// Straight-line distance and a rough duration for the confirmation dialog.
+function goalPlan(pose,goal){
+  const distance=Math.hypot(goal.x-pose.x,goal.y-pose.y);
+  return {distance,seconds:Math.max(5,Math.round((distance/NAV_AVERAGE_SPEED+6)/5)*5)};
+}
+
+function defaultMapName(date){
+  const p=n=>String(n).padStart(2,'0');
+  return 'room-'+date.getFullYear()+p(date.getMonth()+1)+p(date.getDate())+'-'+p(date.getHours())+p(date.getMinutes());
+}
+
+function mapNameValid(name){return /^[A-Za-z0-9_-]{1,64}$/.test(name);}
+
+function containerText(navd){
+  if(!navd)return {text:'等待 Pi 代理',level:'neutral'};
+  if(!navd.online)return {text:'导航服务未连接',level:'fault'};
+  const c=String(navd.container||'');
+  if(c==='starting'||c==='running starting')return {text:'启动中',level:'neutral'};
+  if(c==='running'||c==='running healthy')return {text:'运行中',level:'good'};
+  if(c==='running unhealthy')return {text:'运行异常',level:'fault'};
+  if(c==='missing')return {text:'未创建',level:'neutral'};
+  if(c.startsWith('exited')||c.startsWith('created'))return {text:'已停止',level:'neutral'};
+  return {text:c||'未知',level:'neutral'};
+}
+
+function containerRunning(navd){return !!navd&&navd.online&&/^running/.test(String(navd.container||''));}
+
+function navdModeText(navd){
+  if(!navd||!navd.online)return '—';
+  if(navd.mode==='mapping')return '建图';
+  if(navd.mode==='localization')return navd.map?'定位 · '+navd.map:'定位';
+  return '只有里程计（未建图）';
+}
+
+function jobText(job,now){
+  if(!job)return '还没有任务';
+  const detail=job.detail&&job.detail.map?' '+job.detail.map:'';
+  if(job.state==='running'){
+    const seconds=Number.isFinite(now)&&Number.isFinite(job.started)?Math.max(0,Math.round(now-job.started)):null;
+    return (NAV_OP_RUNNING[job.op]||job.op)+detail+'…'+(seconds!=null?'（'+seconds+' 秒）':'');
+  }
+  const result=job.message||{ok:'完成',failed:'失败',cancelled:'已取消'}[job.state]||job.state;
+  const age=Number.isFinite(now)&&Number.isFinite(job.finished)?'（'+formatAge(now-job.finished)+'）':'';
+  return (NAV_OP_TEXT[job.op]||job.op)+'：'+result+age;
+}
+
+function mapOptionText(map){
+  if(map.error)return map.name+' · 无法读取';
+  const date=new Date(map.modified*1000),p=n=>String(n).padStart(2,'0');
+  const when=(date.getMonth()+1)+'月'+date.getDate()+'日 '+p(date.getHours())+':'+p(date.getMinutes());
+  return map.name+' · '+(Number.isFinite(map.area_m2)?map.area_m2.toFixed(1)+' m² · ':'')+when;
 }

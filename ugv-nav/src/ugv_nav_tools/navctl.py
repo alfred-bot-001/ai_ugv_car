@@ -15,6 +15,7 @@ import re
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Sequence
@@ -111,6 +112,10 @@ def write_arm(
     return session
 
 
+class Cancelled(RuntimeError):
+    """An operator cancel (ugv-navd stop) came before this motion window opened."""
+
+
 class BatteryLow(ValueError):
     """Standstill voltage below a gate; `critical` means do not even go home."""
 
@@ -136,6 +141,10 @@ class NavCtl:
         self.clock = clock
         self.echo = echo
         self.sleep = sleep
+        # ugv-navd cancels from another thread: it sets `cancelled` and disarms under
+        # `arm_lock`, so a goal that has not armed yet can no longer open its window.
+        self.arm_lock = threading.Lock()
+        self.cancelled: Callable[[], bool] = lambda: False
 
     def standstill_voltage(self) -> float:
         """Median pack voltage while both wheels are still; motor load sags it."""
@@ -176,11 +185,19 @@ class NavCtl:
         with contextlib.suppress(BoardError):
             self.board.stop()
 
+    def cancel(self) -> None:
+        """Close any motion window now and keep this run's goals from opening one."""
+        with self.arm_lock:
+            self.disarm()
+
     @contextlib.contextmanager
     def armed(self) -> Iterator[str]:
         """One bounded motion window; always disarmed and stopped afterwards."""
-        self.disarm()
-        session = write_arm(self.settings.board, enabled=True, now=self.clock())
+        with self.arm_lock:
+            if self.cancelled():
+                raise Cancelled("cancelled before motion")
+            self.disarm()
+            session = write_arm(self.settings.board, enabled=True, now=self.clock())
         try:
             yield session
         finally:

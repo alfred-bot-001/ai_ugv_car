@@ -25,6 +25,7 @@ from .capture import Camera, CaptureWorker, Frame, Microphone
 from .hardware import Board, system_status
 from .m2 import M2Link
 from .nav import NavBridge
+from .nav_ops import NAVD_SOCKET, OP_TEXT, NavCommand, NavdClient
 from .nav_stream import NavStream
 from .navframe import make_packet
 from .pose_process import PoseProcess
@@ -33,6 +34,14 @@ from .safety import Guard
 
 LOGGER = logging.getLogger(__name__)
 M2_MICROPHONE = "hw:CARD=XFMDPV0018,DEV=0"
+# Safety stops as the map page log shows them (tvpet_pi.nav reasons).
+NAV_STOP_TEXT = {
+    "stall_body": "车轮在转但车没动",
+    "localization_lost": "定位丢失",
+    "stall_wheel_left": "左轮转不动",
+    "stall_wheel_right": "右轮转不动",
+    "operator_cancel": "网页取消了导航",
+}
 
 
 def alsa_card_present(device: str, cards: str) -> bool:
@@ -57,8 +66,15 @@ class AgentRuntime:
         self.nav_stream = NavStream(Path(str(nav_dir)), self.board.closed) if nav_dir else None
         if self.nav and self.nav_stream:
             stream = self.nav_stream
-            self.nav.notify = lambda reason: stream.log("WARN", "安全停车：" + reason)
+            self.nav.notify = lambda reason: stream.log(
+                "WARN", "已停车：" + NAV_STOP_TEXT.get(reason, reason)
+            )
         self.nav_viewers_until = 0.0
+        # Map page controls run through ugv-navd (docker is outside this sandbox).
+        navd_socket = Path(str(config.get("navd_socket", NAVD_SOCKET)))
+        self.navd = NavdClient(navd_socket) if nav_dir else None
+        self.navd_status: dict[str, Any] | None = None
+        self.navd_job_seen = ""
         # A plain USB microphone has no M2 serial link; set "m2" to "" for it.
         m2_path = str(config.get("m2", "/dev/m2_mic"))
         self.m2 = M2Link(m2_path) if m2_path else None
@@ -242,6 +258,8 @@ class AgentRuntime:
                     await asyncio.to_thread(worker.start)
                 elif not enabled:
                     await asyncio.to_thread(worker.stop)
+            elif action == "nav":
+                result["nav"] = await self.nav_command(NavCommand.model_validate(args))
             elif action == "snapshot":
                 self.snapshot_id = str(args["snapshot_id"])
                 self.snapshot_min_version = self.camera.version
@@ -254,6 +272,48 @@ class AgentRuntime:
         except (ValueError, OSError, KeyError, wave.Error) as error:
             result.update(ok=False, error=str(error))
         await self.send(result)
+
+    async def nav_command(self, command: NavCommand) -> dict[str, Any]:
+        """Run one map page command through ugv-navd; a cancel first stops the wheels here."""
+        if self.navd is None:
+            raise ValueError("navigation is not configured")
+        if command.op == "stop":
+            # Never wait for another process to stop: release the wheels and end the
+            # arm session right away; ugv-navd then disarms and cancels Nav2 goals.
+            with contextlib.suppress(OSError, ValueError):
+                self.board.stop()
+            job = (self.navd_status or {}).get("job") or {}
+            if self.nav and (self.nav.owned or job.get("state") == "running"):
+                self.nav.halt("operator_cancel")
+        if command.op not in ("status", "maps") and self.nav_stream:
+            self.nav_stream.log("INFO", "网页操作：" + command.describe())
+        try:
+            return await asyncio.to_thread(self.navd.request, command.payload())
+        except ValueError as error:
+            if command.op == "stop":
+                return {"stopped": True, "navd_error": str(error)}
+            raise
+
+    def read_navd(self) -> dict[str, Any]:
+        """ugv-navd's status for the map page; logs each finished job once."""
+        assert self.navd is not None
+        try:
+            status = self.navd.request({"op": "status"})
+        except ValueError as error:
+            return {"online": False, "error": str(error)}
+        status.pop("ok", None)
+        status["online"] = True
+        job = status.get("job")
+        if isinstance(job, dict) and job.get("state") != "running":
+            key = f"{job.get('id')}:{job.get('state')}"
+            if self.navd_job_seen and key != self.navd_job_seen and self.nav_stream:
+                level = "INFO" if job.get("state") == "ok" else "WARN"
+                text = OP_TEXT.get(str(job.get("op")), str(job.get("op")))
+                self.nav_stream.log(level, f"{text}：{job.get('message', '')}")
+            self.navd_job_seen = key
+        elif isinstance(job, dict):
+            self.navd_job_seen = self.navd_job_seen or "running"
+        return status
 
     def _worker(self, channel: str) -> CaptureWorker:
         worker = {"video": self.camera, "audio": self.microphone, "front": self.front_camera}
@@ -400,6 +460,7 @@ class AgentRuntime:
                 "owned": self.nav.owned if self.nav else False,
                 "estopped": self.board.guard.estopped,
                 "relay": bool(self.nav_stream and self.nav_stream.connected),
+                "navd": self.navd_status,
             },
         )
 
@@ -448,6 +509,8 @@ class AgentRuntime:
                 if packets is None:
                     seq, packets = cache.snapshot()
                 if time.monotonic() - last_agent >= 1:
+                    if self.navd:
+                        self.navd_status = await asyncio.to_thread(self.read_navd)
                     packets.append(self.nav_agent_packet())
                     last_agent = time.monotonic()
                 for data in packets:

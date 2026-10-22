@@ -1,0 +1,23 @@
+# Host service behind the console map page's controls (ugv_nav_tools.navd).
+# Runs as ws with sudo for docker, like an operator using ugv-navctl over ssh; its
+# socket lives in /home/ws/deploy/ugv-nav/run, which the container does not mount.
+[Unit]
+Description=ugv-navd: console map page operations for the ugv-nav container
+After=docker.service ai-tv-pet-agent.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=ws
+Group=ws
+WorkingDirectory=/home/ws/deploy/ugv-nav
+ExecStart=/home/ws/deploy/ugv-nav/.venv/bin/ugv-navd
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=10
+UMask=0077
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
