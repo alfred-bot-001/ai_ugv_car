@@ -348,5 +348,6 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **协议**：`Stick` 新增可选字段 `speed`（`tvpet_pi.protocol`，`JOYSTICK_SPEED_MIN/DEFAULT/MAX = 0.07/0.10/0.18`，带日期与理由注释），缺省 0.10，超出范围由 Pydantic 拒绝；云台命令忽略该字段。Mini 只校验并原样转发。
 - **Pi**：`Board.move()` 的 T1 上限改为 `stick.speed`，`nav.py` 仍显式传 `maximum=PWM_LIMIT`；实测轮速 0.3 m/s 的失控停车阈值不变。摇杆的差速混合没有改，部分偏转时单侧仍可能落在 0.07 以下的抖动区。
 - **验证**：门禁通过，新增 `test_speed_frontend.mjs`；本机以 `CONSOLE_DEV_HTTP=1` 预览，桌面与 375px 手机视口滑杆显示正常、刷新后保留，无控制台错误。
-- **部署**：Pi 先装 0.6.1（旧版 Pi 收到 `speed` 字段会拒绝整条命令），再装 Mini 0.8.1（主控台与 Pi 代理两个 wheel）；备份与回滚位置见下方部署记录。
+- **部署（2026-10-22，main `1e2303b`）**：Pi 先装 0.6.1（旧版 Pi 收到 `speed` 字段会拒绝整条命令），再装 Mini 0.8.1。Pi：备份 `backups/20261022-pre-0.6.1/`（两个环境的 `tvpet_pi/` 和 `agent.json`），wheel 在 `releases/0.6.1/`，两个环境装好后重启服务；容器当时未运行，没有地图丢失。Mini：`releases/0.8.1-ai_ugv_car-1e2303b/`（主控台 0.8.1、Pi 代理 0.6.1 两个 wheel 和 `uv.lock`），`launchctl bootout/bootstrap` 一次成功。核验：Pi 服务 active、`ugv-navctl status` 正常、对外 5 条连接；Mini 本机与公网 `/health` 均 `agent_online: true`，公网 `app.js` 与源码逐字节一致、`style.css` 含滑杆样式。未发送移动指令，`arm.json` 未动。
+- **回滚**：Mini 装回 `releases/0.8.0-ai_ugv_car-e255c75/` 后重启 launchd；Pi 装回 `releases/0.6.0/`（两个环境）后重启服务。先回滚 Mini 再回滚 Pi（旧 Mini 不发 `speed`，新 Pi 兼容）。
 - **待办**：首次用 0.18 实车试驾需用户在场、清场，观察制动距离是否仍在接受范围。
