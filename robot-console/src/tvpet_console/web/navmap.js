@@ -205,3 +205,38 @@ function goalBlocker(s){
   if(!s.poseFresh)return s.navd.mode==='localization'?'先把老三的位置设好':'还没有老三的实时位置';
   return '';
 }
+
+// A map belongs to the container run that sent it; packets from older relays lack a session.
+function sameSession(a,b){return !Number.isFinite(a)||!Number.isFinite(b)||a===b;}
+
+// Distance in cells from (col, row) to the nearest wall pixel (opaque and dark) within
+// maxCells, or Infinity. pixels is RGBA, row 0 on top, as the recolored map canvas holds.
+function nearestWall(pixels,width,height,col,row,maxCells){
+  let best=Infinity;
+  for(let dy=-maxCells;dy<=maxCells;dy++){
+    const y=row+dy;if(y<0||y>=height)continue;
+    for(let dx=-maxCells;dx<=maxCells;dx++){
+      const x=col+dx;if(x<0||x>=width)continue;
+      const i=(y*width+x)*4;
+      if(pixels[i+3]===255&&pixels[i]<128){const d=Math.hypot(dx,dy);if(d<best)best=d;}
+    }
+  }
+  return best;
+}
+
+// Chinese for the log lines operators meet most; anything else stays as it is.
+const LOG_TEXT=[
+  [/^motion gate: front obstacle and turn space not verified/,'安全门：前方 30 cm 内有障碍，停止前进'],
+  [/^motion gate: near wall: verified-clear turn only/,'安全门：靠近障碍，只允许原地慢转'],
+  [/^motion gate: scan stale or too few valid front rays/,'安全门：激光数据过期或前方有效点太少，已停车'],
+  [/^motion gate: laser odometry stale or invalid/,'安全门：激光里程计过期，已停车'],
+  [/^Failed to make progress/,'导航：一段时间没有进展，放弃这个目标'],
+  [/^Goal failed/,'导航：目标失败'],
+  [/^Goal succeeded/,'导航：已到达目标'],
+  [/^Begin navigating from current location/,'导航：开始前往目标'],
+];
+function logText(text){
+  const value=String(text||'');
+  for(const [pattern,chinese] of LOG_TEXT)if(pattern.test(value))return chinese;
+  return value;
+}

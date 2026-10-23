@@ -12,6 +12,7 @@ from ugv_nav_tools.loc_health import (
     covariance_fault,
     match_ratio,
     scan_endpoints,
+    should_halt,
 )
 from ugv_nav_tools.stall import Pose2D
 
@@ -92,3 +93,12 @@ def test_mapping_mode_judges_only_jumps() -> None:
     located = LocalizationHealth(localization=True)
     located.on_covariance(wide)
     assert located.reason is not None and "AMCL" in located.reason
+
+
+def test_halt_only_while_navigation_drives() -> None:
+    driving = {"nav_owned": True, "fault": None}
+    assert should_halt("map->odom jumped 0.30 m", driving)
+    assert not should_halt(None, driving)
+    assert not should_halt("map->odom jumped 0.30 m", {"nav_owned": False, "fault": None})
+    assert not should_halt("jump", {"nav_owned": True, "fault": {"reason": "stall_body"}})
+    assert not should_halt("jump", {})

@@ -41,6 +41,8 @@ def test_pose_math_and_tolerance() -> None:
     assert within_tolerance(Pose(0.05, 0, 0.1), Pose(0, 0, 0))
     assert within_tolerance(Pose(0.08, 0, 0), Pose(0, 0, 0))
     assert not within_tolerance(Pose(0.11, 0, 0), Pose(0, 0, 0))
+    assert within_tolerance(Pose(0, 0, 0.34), Pose(0, 0, 0))
+    assert not within_tolerance(Pose(0, 0, 0.36), Pose(0, 0, 0))
     with pytest.raises(ValueError):
         Pose(math.nan, 0, 0)
 

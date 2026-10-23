@@ -43,6 +43,14 @@ MAX_REQUEST = 4096
 # A home map is a few tens of metres at most; anything outside is a typo or an attack.
 COORD_LIMIT = 100.0
 CONTAINER_CACHE_S = 2.0
+# After a mode switch the Nav2 lifecycle managers must report their nodes active. On the
+# car (2026-10-23) map_server's reply to "configure" was lost in DDS once and the stack
+# sat unconfigured; one recreate fixed it. So: wait, recreate once, then fail clearly.
+READY_TIMEOUT_S = 90.0
+READY_POLL_S = 3.0
+MANAGERS = {"navigation": "导航", "localization": "定位"}
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+ACTIVE = re.compile(r"\[lifecycle_manager_(\w+)\]: Managed nodes are active")
 MAX_MAPS = 100
 OPS = ("status", "maps", "mapping", "save", "localize", "pose", "goal", "stop")
 FIELDS = {
@@ -206,6 +214,11 @@ def list_maps(maps: Path) -> list[dict[str, Any]]:
     return found[:MAX_MAPS]
 
 
+def active_managers(log_text: str) -> set[str]:
+    """Lifecycle managers (navigation, localization, ...) whose nodes came up."""
+    return set(ACTIVE.findall(ANSI.sub("", log_text)))
+
+
 def docker_state(container: str, run: Callable[..., Any] = subprocess.run) -> str:
     """'running', 'exited', ... (plus ' healthy'/' unhealthy'), or 'missing'."""
     template = "{{.State.Status}}{{if .State.Health}} {{.State.Health.Status}}{{end}}"
@@ -311,13 +324,14 @@ class Navd:
     def execute(self, request: Request) -> tuple[str, str, dict[str, Any]]:
         ctl = self.ctl
         if request.op == "mapping":
-            ctl.set_mode(mapping=True)
-            return "ok", "已进入建图模式，导航容器正在启动", {}
+            retried = self.switch_mode(mapping=True)
+            return "ok", "已进入建图模式" + retried, {}
         if request.op == "localize":
             if not (ctl.settings.maps / f"{request.map}.yaml").exists():
                 raise ValueError(f"找不到地图 {request.map}")
-            ctl.set_mode(mapping=False, name=request.map)
-            return "ok", f"已切换到地图 {request.map}，请设置当前位置", {"map": request.map}
+            retried = self.switch_mode(mapping=False, name=request.map)
+            message = f"已加载地图 {request.map}{retried}，请设置老三的位置"
+            return "ok", message, {"map": request.map}
         if request.op == "save":
             ctl.save(request.map)
             return "ok", f"地图已保存为 {request.map}", {"map": request.map}
@@ -333,6 +347,33 @@ class Navd:
             return "ok", "已设置当前位置", reached
         summary, message = goal_summary(ctl.goal(pose))
         return ("ok" if summary.get("ok") else "failed"), message, summary
+
+    def switch_mode(self, *, mapping: bool, name: str | None = None) -> str:
+        """Recreate the container and wait for its lifecycle managers; one retry."""
+        needed = {"navigation"} if mapping else {"navigation", "localization"}
+        for attempt in (1, 2):
+            self.ctl.set_mode(mapping=mapping, name=name)
+            missing = self.wait_ready(needed)
+            if not missing:
+                return "（启动卡住，已自动重试）" if attempt == 2 else ""
+            LOGGER.warning("lifecycle not active after %.0f s: %s", READY_TIMEOUT_S, missing)
+        names = "、".join(MANAGERS.get(m, m) for m in sorted(missing))
+        raise RuntimeError(f"导航容器的{names}模块没能启动，请再试一次")
+
+    def wait_ready(self, needed: set[str]) -> set[str]:
+        """Managers still not active when the wait ends (empty when all came up)."""
+        deadline = self.monotonic() + READY_TIMEOUT_S
+        while True:
+            done = self.ctl.run(
+                ["sudo", "-n", "docker", "logs", self.ctl.settings.container],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            missing = needed - active_managers(str(done.stdout) + str(done.stderr))
+            if not missing or self.monotonic() >= deadline:
+                return missing
+            self.ctl.sleep(READY_POLL_S)
 
     def stop(self) -> dict[str, Any]:
         """Close the motion window now; Nav2 goals are cancelled in the background."""

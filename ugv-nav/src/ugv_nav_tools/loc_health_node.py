@@ -1,8 +1,9 @@
 """ROS2 node `ugv-loc-health`: stops the car through pi-agent when localization is unhealthy.
 
-Logic lives in loc_health (unit-tested without ROS). A failing check sends
-{"op": "stop", "reason": "localization_lost"}, which also ends pi-agent's arm session;
-motion needs healthy localization and a new ugv-navctl arm session. Never relocalizes.
+Logic lives in loc_health (unit-tested without ROS). While navigation drives the
+chassis, a failing check sends {"op": "stop", "reason": "localization_lost"}, which also
+ends pi-agent's arm session; motion needs healthy localization and a new ugv-navctl arm
+session. Manual driving and idle time are only logged. Never relocalizes.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from tf2_ros import Buffer, TransformListener
 
 from .board_client import BoardClient, BoardError
 from .bridge_node import SOCKET
-from .loc_health import LocalizationHealth, Stamped, match_ratio, scan_endpoints
+from .loc_health import LocalizationHealth, Stamped, match_ratio, scan_endpoints, should_halt
 from .stall import Pose2D
 
 PERIOD_S = 0.2
@@ -115,7 +116,8 @@ class LocHealthNode(Node):  # type: ignore[misc]
             self.last_reason = reason
         if reason:
             try:
-                if self.client.fault() is None:  # also re-halts a fresh arm session
+                # Also re-halts a fresh arm session once it starts driving.
+                if should_halt(reason, self.client.status()):
                     self.client.stop(reason=STOP_REASON)
                 self.board_error = ""
             except BoardError as error:

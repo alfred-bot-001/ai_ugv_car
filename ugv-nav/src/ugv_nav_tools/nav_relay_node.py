@@ -56,6 +56,8 @@ class NavRelay(Node):  # type: ignore[misc]
         self.pending_map: Any = None
         self.map_sent_at = 0.0
         self.map_stamp = 0.0
+        # Marks this container run, so the page drops a map cached from an earlier one.
+        self.session = round(time.time(), 3)
         self.scan: Any = None
         self.scan_count = 0
         self.scan_rate = 0.0
@@ -122,7 +124,8 @@ class NavRelay(Node):  # type: ignore[misc]
             info.origin.position.y,
         )
         self.map_stamp = time.time()
-        self.sender.put("map", packet("map", {"stamp": self.map_stamp, **meta}, png))
+        meta |= {"stamp": self.map_stamp, "session": self.session}
+        self.sender.put("map", packet("map", meta, png))
 
     def on_scan(self, message: Any) -> None:
         self.scan = message
@@ -186,6 +189,7 @@ class NavRelay(Node):  # type: ignore[misc]
         self.scan_count, self.scan_rate_at = 0, now
         meta = {
             "stamp": time.time(),
+            "session": self.session,
             "mode": self.mode,
             "map": self.map_name,
             "map_stamp": self.map_stamp or None,

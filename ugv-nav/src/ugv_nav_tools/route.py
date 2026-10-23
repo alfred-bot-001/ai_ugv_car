@@ -13,7 +13,10 @@ MAX_LOOPS = 10
 # Nav2 result 4 plus this final check. 0.10 m (was 0.075) because the six-wheel skid
 # chassis slides a few cm while turning in place (measured 2026-10-14).
 GOAL_TOLERANCE_M = 0.10
-GOAL_TOLERANCE_RAD = 0.18
+# 2026-10-23, user-approved (was 0.18): wheels below 0.07 m/s stutter, so the slowest
+# in-place turn is about 0.8 rad/s and the last 10-20 deg overshoot; a map-page goal
+# ended 13 cm / 20 deg short. Matches Nav2's yaw_goal_tolerance in config/nav.yaml.
+GOAL_TOLERANCE_RAD = 0.35
 
 
 @dataclass(frozen=True)
