@@ -16,8 +16,8 @@ const logKeys=new Set();
 // Controls: the active map tool, a press-and-drag arrow, the target awaiting confirmation.
 let tool='view',arrow=null,pendingTarget=null,maps=[],mapsLoaded=false,mapsLoading=false;
 let jobSeen=false,lastJobKey='',overwriteName='',dialogPending=null;
-// Wheel joystick (same held-state relay as the dashboard: the knob stays put).
-let controlSocket=null,press=null,dragging=false,pressGeneration=0,controlSequence=0,lease='',leasing=null,streamTimer=null,lastSend=0;
+// Wheel and gimbal joysticks (same held-state relay as the dashboard: the knobs stay put).
+let controlSocket=null,press={wheels:null,gimbal:null},dragging=null,pressGeneration=0,controlSequence=0,lease='',leasing=null,streamTimer=null,lastSend=0;
 const TOOL_HINT={view:'拖动平移，滚轮或双指缩放',pose:'在地图上按住老三所在的位置，朝车头方向拖出箭头再松开',goal:'在地图上按住目标点，拖出到达后的朝向再松开（直接点一下也可以）'};
 
 function toast(message){$('#toast').textContent=message;$('#toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').hidden=true,6000);}
@@ -200,8 +200,9 @@ function renderControls(){
   const board=lastStatus.state?.board||{},telemetry=board.telemetry||{},driving=busy&&job.op==='goal';
   const wheels=!!lastStatus.online&&board.wheels_ready&&!board.estopped;
   $('#stick-wheels').setAttribute('aria-disabled',String(!wheels||driving));
+  $('#stick-gimbal').setAttribute('aria-disabled',String(!(lastStatus.online&&board.gimbal_ready&&!board.estopped)));
   const gate=$('#gate-wheels');gate.textContent=board.estopped?'急停锁定':driving?'导航中':wheels?'可以控制':!lastStatus.online?'设备离线':board.control_qualified?'等待硬件恢复':'硬件待检查';gate.className='badge '+(wheels&&!driving?'':'warning');
-  $('#feedback-wheels').textContent=driving?'正在自主导航；要手动开，先点「取消导航」。':wheels&&Number.isFinite(telemetry.L)?'速度上限 '+wheelSpeed().toFixed(2)+' m/s（在设备总览页调）· 左 '+telemetry.L.toFixed(2)+' / 右 '+telemetry.R.toFixed(2):board.gate_reason||'支持触摸、鼠标与方向键';
+  $('#feedback-wheels').textContent=driving?'正在自主导航；要手动开，先点「取消导航」。':wheels&&Number.isFinite(telemetry.L)?'速度上限 '+wheelSpeed().toFixed(2)+' m/s（在设备总览页调）· 左 '+telemetry.L.toFixed(2)+' / 右 '+telemetry.R.toFixed(2):board.gate_reason||'支持触摸、鼠标与键盘';
   $('#reset-estop').hidden=!board.estopped;
 }
 function setTool(name){
@@ -312,42 +313,55 @@ function renderMapList(){
 $('#refresh-maps').onclick=()=>loadMaps();
 $('#map-select').onchange=()=>renderControls();
 
-// ---- wheel joystick. The knob stays where it is put and the car keeps driving: the
-// page relays the held state ten times a second (no per-command handshake). Stop by
-// dragging the knob back to the middle, tapping the middle, 取消导航 or the emergency
-// stop; hiding the page or losing the link also stops.
-const STREAM_MS=100,DEAD_ZONE=.12;
+// ---- joysticks. The knobs stay where they are put and the car keeps driving: the
+// page relays every held state ten times a second (no per-command handshake). Stop by
+// dragging a knob back to the middle, tapping the middle, 取消导航 or the emergency
+// stop; hiding the page or losing the link also stops. The wheels pad sits bottom-left
+// of the live picture (keys W/A/S/D), the gimbal pad bottom-right (arrow keys).
+const STREAM_MS=100,DEAD_ZONE=.12,TARGETS=['wheels','gimbal'];
 // The speed chosen with the dashboard slider (same 0.07..0.18 band as tvpet_pi.protocol).
 function wheelSpeed(){try{const speed=Number(localStorage.getItem('wheels-speed'));return Number.isFinite(speed)&&speed>0?Math.min(.18,Math.max(.07,speed)):.1;}catch{return .1;}}
+function engaged(){return !!(press.wheels||press.gimbal);}
 function connectControl(){
   if(stopped||controlSocket)return;
   const ws=socket('control');controlSocket=ws;
-  ws.onmessage=e=>{const data=JSON.parse(e.data);if(data.code==='lease'){lease='';if(press)acquireLease();return;}if(data.error){toast(data.error);releaseStick();return;}if(data.online===false&&press)releaseStick();};
+  ws.onmessage=e=>{const data=JSON.parse(e.data);if(data.code==='lease'){lease='';if(engaged())acquireLease();return;}if(data.error){toast(data.error);releaseStick();return;}if(data.online===false&&engaged())releaseStick();};
   ws.onclose=()=>{if(controlSocket===ws)controlSocket=null;releaseStick();if(!stopped)setTimeout(connectControl,1500);};
 }
-function sendStick(){if(!press||!lease||!controlSocket||controlSocket.readyState!==WebSocket.OPEN)return;lastSend=performance.now();controlSocket.send(JSON.stringify({target:'wheels',x:press.x,y:press.y,lease,sequence:++controlSequence,speed:wheelSpeed()}));}
-function sendSoon(){if(lease&&performance.now()-lastSend>40)sendStick();}
-function startStream(){clearInterval(streamTimer);streamTimer=setInterval(sendStick,STREAM_MS);sendStick();}
-function acquireLease(){if(leasing)return leasing;const generation=pressGeneration;leasing=(async()=>{try{const result=await(await api('control/lease')).json();if(generation!==pressGeneration||!press){await api('control/stop').catch(()=>{});return;}lease=result.lease;startStream();}catch(error){toast(error.message);releaseStick();}finally{leasing=null;}})();return leasing;}
-function knob(x,y){const element=$('#stick-wheels'),radius=element.getBoundingClientRect().width/2-30;element.querySelector('.stick-knob').style.transform=`translate(${x*radius}px,${-y*radius}px)`;element.classList.toggle('engaged',!!(x||y));}
-function positionStick(element,event){const rect=element.getBoundingClientRect(),radius=rect.width/2-30;let x=(event.clientX-rect.left-rect.width/2)/radius,y=-(event.clientY-rect.top-rect.height/2)/radius;const scale=Math.max(1,Math.hypot(x,y));x/=scale;y/=scale;if(Math.hypot(x,y)<DEAD_ZONE){x=0;y=0;}press={x,y};knob(x,y);sendSoon();}
+function stickMessage(target,state){const message={target,x:state.x,y:state.y,lease,sequence:++controlSequence};if(target==='wheels')message.speed=wheelSpeed();return message;}
+function sendSticks(){if(!lease||!controlSocket||controlSocket.readyState!==WebSocket.OPEN)return;lastSend=performance.now();for(const target of TARGETS)if(press[target])controlSocket.send(JSON.stringify(stickMessage(target,press[target])));}
+function sendSoon(){if(lease&&performance.now()-lastSend>40)sendSticks();}
+function startStream(){clearInterval(streamTimer);streamTimer=setInterval(sendSticks,STREAM_MS);sendSticks();}
+function acquireLease(){if(leasing)return leasing;const generation=pressGeneration;leasing=(async()=>{try{const result=await(await api('control/lease')).json();if(generation!==pressGeneration||!engaged()){await api('control/stop').catch(()=>{});return;}lease=result.lease;startStream();}catch(error){toast(error.message);releaseStick();}finally{leasing=null;}})();return leasing;}
+// The knob travels to the ring just inside the pad's edge, whatever size the pad is.
+function stickRadius(element){return element.getBoundingClientRect().width/2-element.querySelector('.stick-knob').offsetWidth/2-4;}
+function knob(target,x,y){const element=$('#stick-'+target),radius=stickRadius(element);element.querySelector('.stick-knob').style.transform=`translate(${x*radius}px,${-y*radius}px)`;element.classList.toggle('engaged',!!(x||y));}
+function positionStick(target,element,event){const rect=element.getBoundingClientRect(),radius=stickRadius(element);let x=(event.clientX-rect.left-rect.width/2)/radius,y=-(event.clientY-rect.top-rect.height/2)/radius;const scale=Math.max(1,Math.hypot(x,y));x/=scale;y/=scale;if(Math.hypot(x,y)<DEAD_ZONE){x=0;y=0;}press[target]={x,y};knob(target,x,y);sendSoon();}
 function beginStick(element,event){
-  if(element.getAttribute('aria-disabled')==='true'){toast($('#feedback-wheels').textContent||'现在不能遥控');return;}
-  event.preventDefault();if(!press)pressGeneration++;dragging=true;
-  if(event.pointerId!=null){element.setPointerCapture(event.pointerId);positionStick(element,event);}else if(!press)press={x:0,y:0};
+  const target=element.dataset.target;
+  if(element.getAttribute('aria-disabled')==='true'){toast(target==='wheels'?$('#feedback-wheels').textContent||'现在不能遥控':lastStatus.state?.board?.gate_reason||'云台现在不能控制');return;}
+  event.preventDefault();if(!engaged())pressGeneration++;dragging=target;
+  if(event.pointerId!=null){element.setPointerCapture(event.pointerId);positionStick(target,element,event);}else if(!press[target])press[target]={x:0,y:0};
   if(!lease)acquireLease();
 }
-function endDrag(){if(!dragging)return;dragging=false;if(press&&!press.x&&!press.y)releaseStick();}
-function releaseStick(){const had=!!press||!!lease;pressGeneration++;clearInterval(streamTimer);streamTimer=null;if(press&&lease){press={x:0,y:0};sendStick();}press=null;dragging=false;lease='';knob(0,0);if(had&&csrf)api('control/stop').catch(()=>{});}
-const ARROWS={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,1],ArrowDown:[0,-1]};
-{
-  const element=$('#stick-wheels');
+function endDrag(element){const target=element.dataset.target;if(dragging!==target)return;dragging=null;const state=press[target];if(state&&!state.x&&!state.y)stopStick(target);}
+// Centre one knob and drop it from the relay; the lease ends once nothing is held.
+function stopStick(target){if(press[target]){press[target]={x:0,y:0};sendSticks();press[target]=null;}knob(target,0,0);if(dragging===target)dragging=null;if(!engaged())releaseStick();}
+function releaseStick(){const had=engaged()||!!lease;pressGeneration++;clearInterval(streamTimer);streamTimer=null;if(lease){for(const target of TARGETS)if(press[target])press[target]={x:0,y:0};sendSticks();}press={wheels:null,gimbal:null};dragging=null;lease='';for(const target of TARGETS)knob(target,0,0);if(had&&csrf)api('control/stop').catch(()=>{});}
+for(const element of document.querySelectorAll('.joystick')){
+  const target=element.dataset.target;
   element.addEventListener('pointerdown',e=>beginStick(element,e));
-  element.addEventListener('pointermove',e=>{if(dragging&&press)positionStick(element,e);});
-  for(const kind of ['pointerup','pointercancel','lostpointercapture'])element.addEventListener(kind,endDrag);
-  element.addEventListener('keydown',e=>{if(!ARROWS[e.key]||e.repeat)return;beginStick(element,e);if(press){const [x,y]=ARROWS[e.key];press={x,y};knob(x,y);dragging=false;sendSoon();}});
-  element.addEventListener('keyup',e=>{if(ARROWS[e.key])releaseStick();});
+  element.addEventListener('pointermove',e=>{if(dragging===target&&press[target])positionStick(target,element,e);});
+  for(const kind of ['pointerup','pointercancel','lostpointercapture'])element.addEventListener(kind,()=>endDrag(element));
 }
+// Keyboard, game-pad style anywhere on the page (keypad.js): W/A/S/D hold the wheels,
+// the arrow keys hold the gimbal; the held keys add up and letting go of the last one
+// of a target stops it. Fields and the confirmation dialog keep their keys.
+const heldKeys=new Set();
+function keyStick(target){const state=keypadVector(heldKeys,target);if(!state){stopStick(target);return;}press[target]=state;knob(target,state.x,state.y);if(dragging===target)dragging=null;sendSoon();}
+document.addEventListener('keydown',e=>{const binding=KEY_BINDINGS[e.code];if(!binding||keypadIgnores(e,document))return;e.preventDefault();const target=binding.target;if(!press[target]){beginStick($('#stick-'+target),e);if(!press[target])return;}heldKeys.add(e.code);keyStick(target);});
+document.addEventListener('keyup',e=>{const binding=KEY_BINDINGS[e.code];if(!binding||!heldKeys.has(e.code))return;heldKeys.delete(e.code);if(press[binding.target])keyStick(binding.target);});
+window.addEventListener('blur',()=>heldKeys.clear());
 async function poll(){
   if(stopped)return;
   try{const response=await fetch('/api/v1/status');if(response.status===401){stopAll();location.replace('/');return;}if(!response.ok)throw new Error();lastStatus=await response.json();}catch{lastStatus={online:false};}
