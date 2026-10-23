@@ -458,7 +458,7 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **回滚**：Mini 装回 `releases/0.12.1-ai_ugv_car-0790c3b/` 的主控台 wheel（0.12.1）并 `launchctl bootout/bootstrap`。
 - **部署（2026-10-23 11:55，main `ca0b0c8`，PR #14 合并后从主干顶端构建，校验输出 ok）**：部署前核对 Mini 线上为主控台 0.12.1 / Pi 代理 0.8.1，安装包内 `dashboard.html`、`app.js`、`style.css` 指纹与 `0790c3b` 源码一致，Mini 本机 clone 停在 `0619f9f`、无 worktree，没有别的分支在线上。Mini 装 `releases/0.12.2-ai_ugv_car-ca0b0c8/`（主控台 0.12.2 wheel、`uv.lock`；wheel SHA-256 `7a855385…`），备份 `backups/20261023-pre-0.12.2/`（`tvpet_console/`、`console.sqlite3`）。`launchctl bootout/bootstrap` 一次成功。Pi 无改动、未重启。核验：`.venv` 内 0.12.2；Mini 本机与公网 `/health` 均 `agent_online: true, mode: control`；公网 `app.js`、`style.css` 与安装包内 `dashboard.html` 的 SHA-256 均等于主干源码，安装包页面已无 `gate-gimbal`、`#voice` 位于右栏；重启后日志无报错，Pi 的 video/audio/nav/front 四条 WebSocket 已重连。真机页面效果待用户在浏览器刷新后确认。
 
-## 2026-10-23 云台限位放宽到 ±170° / -30°～90° + 零位校准（Pi 0.8.2，未部署）
+## 2026-10-23 云台限位放宽到 ±170° / -30°～90° + 零位校准（Pi 0.8.2，main `66b4b1d`）
 
 用户反馈：官方云台几乎能转 360°，现在只有 90°，而且从正前方只能向右转。
 
@@ -468,3 +468,5 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **部署前确认**：云台相机 USB 线在 -170° 和 +170° 两端都有余量（10 月 17 日相机反复掉线疑似线被扯）。线不够就把 `PAN_LIMIT` 收到线允许的角度再部署。
 - **验证**：新增单元测试覆盖限位夹取（169→170、-169→-170、89→90、-29→-30）、反馈越界判定、校准命令与舵机 ID、模拟串口下的命令顺序（零速 → T4 → T502）和无反馈拒绝。实车两端转动、校零后 0° 对正车头待用户在场实测。
 - **回滚**：Pi 装回 `releases/0.8.1/` 两个环境后重启服务；舵机零位如要还原，把相机转回原位再跑一次 `tvpet-gimbal-center`（没有「撤销」命令，EEPROM 只保存最后一次）。
+- **部署（2026-10-23 11:57，main `66b4b1d`，PR #17 合并后从主干顶端构建，校验输出 ok；两次变基只在本文件末尾与 PR #14/#16 的追加段落冲突，双方都保留）**：部署前核对 Mini 线上为主控台 0.12.2 / Pi 代理 0.8.1，等于合并前主干 `cc5f217`，没有别的分支在线上；用户已确认云台相机线在 ±170° 两端有余量。Pi 备份 `backups/20261023-pre-0.8.2/`（`venv-tvpet_pi/`、`pose-venv-tvpet_pi/`、`agent.json`），wheel 存 `releases/0.8.2/`（SHA-256 `effc3050…`，与本机构建一致），停服务后装进 `.venv` 和 `pose-venv`，重启一次成功、NRestarts=0。核验：两个环境均 0.8.2，`.venv/bin/tvpet-gimbal-center` 存在，安装包内 `PAN_LIMIT = 170.0`；代理 5 条对外连接；公网 `/health` `agent_online: true, mode: control`（即底盘、云台均 ready）。全程未发运动指令。Mini 的协议依赖包仍是 0.8.1（主控台不引用改动的模块，随下次 Mini 发布一起更新）。开着的 PR #15（底盘速度上限，Pi 0.9.0）需在本次之上变基。
+- **待办（用户在场）**：按上文步骤校零，再用圆盘左右各转到头，看线缆和画面；俯仰上下到头各一次。
