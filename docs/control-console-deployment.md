@@ -429,3 +429,13 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **验证**：本机完整门禁通过（ruff、format、mypy、364 项测试、覆盖率 83.16%）。CI 上 `pull_request` 事件那次 `verify` 失败的三项（`test_sso.py` 两项、`pi-agent/tests/test_nav.py` 套接字权限一项）与主干既有失败完全相同，与本次无关；`push` 事件那次通过。本机渲染在 1900 / 1250 / 375 宽度核对状态条位置与换行。
 - **部署（2026-10-23 10:35，main `685d339`，PR #7 合并后从主干顶端构建，校验输出 ok）**：部署前核对 Mini 线上为主控台 0.11.0 / Pi 代理 0.8.1，等于合并前主干。Mini 装 `releases/0.11.1-ai_ugv_car-685d339/`（主控台 0.11.1 wheel、`uv.lock`；wheel SHA-256 `7892e1a4…`），备份 `backups/20261023-pre-0.11.1/`（`tvpet_console/`、`console.sqlite3`）。`launchctl bootout` 后 `bootstrap` 第一次报错 5，第二次成功。Pi 无改动、未重启。核验：`.venv` 内 0.11.1；本机与公网 `/health` 均 `agent_online: true, mode: control`；公网 `style.css`、`app.js`、`keypad.js` 与源码 SHA-256 一致，`style.css` 已含 `.status-strip`、不含 `.status-card`；Mini 安装包内 `dashboard.html` 与源码一致；服务日志无报错。
 - **回滚**：Mini 装回 `releases/0.11.0-ai_ugv_car-2a0303c/` 的主控台 wheel（或 `backups/20261023-pre-0.11.1/tvpet_console/`）后 `launchctl bootout/bootstrap`。
+
+## 2026-10-23 地图右键菜单（Mini 0.12.0，main `f1e890a`）
+
+用户现场验收时要求：地图上右键弹出菜单选「去这里」，取代原来的「设置位置 / 去这里」工具按钮。
+
+- **页面**：右键地图（手机长按约 0.5 秒）在该点弹出菜单：「去这里」（老三自己规划路线开过去，朝向默认沿行进方向）、「把老三的位置设在这里」（选好后再点一下车头朝向，Esc 或右键取消）。不能用的项灰显并写明原因，如「先把老三的位置设好」「建图时不用设置位置」「导航容器没有运行」。地图下方只留「取消导航」和操作提示。已加载地图但还没有位置时，横幅提示怎么设置；旧的安全停车提示显示发生时间，并说明下次出发会自动解除。确认框、发送的命令和安全检查都不变。
+- **现场问题记录**：用户加载 `room-study-room` 后「去这里」是灰的，「设置位置」报 `ugv-ros-op set-pose failed`。原因是定位栈启动时地图服务的生命周期应答在 DDS 上丢失（`failed to send response to /map_server/change_state (timeout)`），lifecycle_manager 卡在 Configuring map_server，AMCL 停在 unconfigured，没有 `map` 坐标系。重新加载地图后正常（Managed nodes are active）。后续：`ugv-navd` 加载后确认两个 lifecycle_manager 都已就绪，卡住就自动重来；地图带容器会话标记，避免页面显示上一个容器的旧图。
+- **验证**：ruff、format、mypy、robot-console 187 项测试通过，`.mjs` 前端测试全部通过（新增菜单可用性用例）；本机 Playwright 用假设备和假 `ugv-navd` 走完右键「设置位置」（含朝向点击）、右键「去这里」、取消、Esc，桌面 1440 与手机 390 无横向溢出、无脚本错误。CI 一次全过，另一次只挂已知的 `test_sso.py` 两项（与 CI 机器开机时长有关）。
+- **部署**：`releases/0.12.0-ai_ugv_car-f1e890a/`（主控台 0.12.0、Pi 代理 0.8.1、`uv.lock`），在 0.11.1（状态条，另一会话刚部署）之上发布，包含它的改动。`/health` `agent_online: true`，公网 `navigation.js` / `navmap.js` 已是新版。Pi 未改动。
+- **回滚**：装回 `releases/0.11.1-ai_ugv_car-685d339/` 后 `launchctl bootout/bootstrap`。
