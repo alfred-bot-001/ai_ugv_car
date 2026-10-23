@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 from tvpet_pi.hardware import RUNAWAY_SPEED, Board
 from tvpet_pi.nav import (
+    NAV_RUNAWAY_SPEED,
     PWM_LIMIT,
     REQUEST,
     WHEEL_FLOOR,
@@ -24,7 +25,7 @@ from tvpet_pi.nav import (
     stick_from_wheels,
     wheel_targets,
 )
-from tvpet_pi.protocol import Stick
+from tvpet_pi.protocol import JOYSTICK_SPEED_MAX, Stick
 from tvpet_pi.safety import Guard, differential
 
 TELEMETRY = b'{"T":1001,"L":0,"R":0,"v":12.1,"pan":0,"tilt":0}\n'
@@ -292,7 +293,7 @@ def test_joystick_stays_at_010_while_nav_may_reach_018(rig: tuple[NavBridge, Moc
     nav.board.stop()
 
 
-def test_joystick_speed_field_raises_the_wheel_ceiling_up_to_018(
+def test_joystick_speed_field_raises_the_wheel_ceiling_up_to_the_factory_130(
     rig: tuple[NavBridge, Mock],
 ) -> None:
     nav, uart = rig
@@ -300,27 +301,75 @@ def test_joystick_speed_field_raises_the_wheel_ceiling_up_to_018(
     guard.heartbeat()
     lease = nav.board.acquire()
     common = {"target": "wheels", "lease": lease}
-    nav.board.move(Stick(x=0, y=1, sequence=1, speed=0.18, **common))
+    assert JOYSTICK_SPEED_MAX == 1.3
+    nav.board.move(Stick(x=0, y=1, sequence=1, speed=1.3, **common))
+    assert wheel_writes(uart)[-1] == {"T": 1, "L": 1.3, "R": 1.3}
+    nav.board.move(Stick(x=0, y=1, sequence=2, speed=0.18, **common))
     assert wheel_writes(uart)[-1] == {"T": 1, "L": 0.18, "R": 0.18}
-    nav.board.move(Stick(x=0, y=-1, sequence=2, speed=0.07, **common))
+    nav.board.move(Stick(x=0, y=-1, sequence=3, speed=0.07, **common))
     assert wheel_writes(uart)[-1] == {"T": 1, "L": -0.07, "R": -0.07}
     # The explicit nav ceiling still wins over the stick field.
     nav.board.move(
-        Stick(x=0, y=1, sequence=3, speed=0.07, **common),
+        Stick(x=0, y=1, sequence=4, speed=0.07, **common),
         maximum=PWM_LIMIT,
     )
     assert wheel_writes(uart)[-1] == {"T": 1, "L": PWM_LIMIT, "R": PWM_LIMIT}
     nav.board.stop()
 
 
-def test_runaway_threshold_sits_above_nav_ceiling(rig: tuple[NavBridge, Mock]) -> None:
-    board = rig[0].board
-    assert PWM_LIMIT < RUNAWAY_SPEED
-    board.telemetry = {"L": 0.25, "R": 0.25, "v": 12.0, "pan": 0, "tilt": 0}
-    board.received_at = time.monotonic()
+def test_runaway_bounds_sit_above_each_mode_ceiling() -> None:
+    # Joystick up to 1.3 under the 1.6 absolute stop; navigation keeps 0.3 above 0.18.
+    assert JOYSTICK_SPEED_MAX < RUNAWAY_SPEED == 1.6
+    assert PWM_LIMIT < NAV_RUNAWAY_SPEED == 0.3 < RUNAWAY_SPEED
+
+
+def feed_wheels(uart: Mock, left: float, right: float = 0.0) -> None:
+    """Let the reader thread (25 ms ticks) see this wheel feedback for a few ticks."""
+    frame = {"T": 1001, "L": left, "R": right, "v": 12.1, "pan": 0, "tilt": 0}
+    uart.read.return_value = json.dumps(frame).encode() + b"\n"
+    time.sleep(0.15)
+
+
+def test_navigation_keeps_the_tight_runaway_bound_and_the_joystick_restores_it(
+    rig: tuple[NavBridge, Mock],
+) -> None:
+    nav, uart = rig
+    board = nav.board
+    # Fresh board: the absolute bound applies, the factory speed is not a fault.
+    assert board.runaway == RUNAWAY_SPEED
+    feed_wheels(uart, 1.3, 1.3)
     assert board.health_error() == ""
-    board.telemetry["L"] = 0.31
+    feed_wheels(uart, 1.61)
     assert "速度" in board.health_error()
+    feed_wheels(uart, 0.0)
+    # A navigation command (as NavBridge sends it) tightens the bound to 0.3.
+    board.guard.heartbeat()
+    lease = board.acquire()
+    board.move(
+        Stick(x=0, y=1, sequence=1, target="wheels", lease=lease),
+        maximum=PWM_LIMIT,
+        runaway=NAV_RUNAWAY_SPEED,
+    )
+    assert board.runaway == NAV_RUNAWAY_SPEED
+    assert board.hold_maximum == PWM_LIMIT
+    feed_wheels(uart, 0.25, 0.25)
+    assert board.guard.lease == lease and not board.guard.estopped
+    # The watchdog uses the same bound: an over-speed wheel is an emergency stop.
+    feed_wheels(uart, 0.31)
+    assert board.guard.estopped and not board.guard.lease
+    assert wheel_writes(uart)[-1] == {"T": 1, "L": 0.0, "R": 0.0}
+    feed_wheels(uart, 0.0)
+    # The next joystick command restores the absolute bound (capped at RUNAWAY_SPEED).
+    board.guard.reset()
+    board.guard.heartbeat()
+    lease = board.acquire()
+    board.move(Stick(x=0, y=1, sequence=1, speed=1.3, target="wheels", lease=lease), runaway=5.0)
+    assert board.runaway == RUNAWAY_SPEED
+    assert board.hold_maximum == 1.3
+    feed_wheels(uart, 1.3, 1.3)
+    assert board.guard.lease == lease and not board.guard.estopped
+    feed_wheels(uart, 0.0)
+    board.stop()
 
 
 def test_board_health_allows_two_degrees_of_servo_overshoot(rig: tuple[NavBridge, Mock]) -> None:

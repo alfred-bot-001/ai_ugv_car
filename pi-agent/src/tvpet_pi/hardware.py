@@ -17,7 +17,12 @@ from .safety import Guard, circle, differential
 
 # Measured wheel speed (m/s) above this is a runaway: emergency stop under a lease.
 # Raised from 0.2 on 2026-10-14 for 0.10 m/s navigation with closed-loop overshoot.
-RUNAWAY_SPEED = 0.3
+# 2026-10-23, user-approved: the web joystick may now command the UGV Rover factory
+# rating of 1.3 m/s, so this absolute bound is 1.6 m/s, the rating plus the ~25 %
+# closed-loop overshoot measured at low speed (0.10 commanded -> 0.127 measured). The
+# navigation bridge passes its own tighter bound (0.3 m/s) to `move()`, so autonomous
+# runs keep the old guard; `Board.runaway` is the bound in force for the current hold.
+RUNAWAY_SPEED = 1.6
 # The watchdog re-sends a held wheel state this often, under the firmware's 300 ms
 # T136 stop, so motion no longer depends on every web packet arriving in time.
 WHEEL_RESEND = 0.1
@@ -89,6 +94,8 @@ class Board:
         # wheels were last written, when the gimbal was last integrated, and whether
         # a stop still has to be written once the held states go stale.
         self.hold_maximum = RUNAWAY_SPEED
+        # Runaway bound in force: RUNAWAY_SPEED for the joystick, tighter for navigation.
+        self.runaway = RUNAWAY_SPEED
         self.last_wheel_write = 0.0
         self.last_gimbal_at = 0.0
         self.last_gimbal_write = 0.0
@@ -185,8 +192,14 @@ class Board:
         if gimbal_stop and self.guard.gimbal_verified:
             self.write({"T": 135})
 
-    def move(self, stick: Stick, maximum: float | None = None) -> None:
-        """Hold a stick state and drive it now; the watchdog keeps driving it (0.5 s)."""
+    def move(
+        self, stick: Stick, maximum: float | None = None, runaway: float = RUNAWAY_SPEED
+    ) -> None:
+        """Hold a stick state and drive it now; the watchdog keeps driving it (0.5 s).
+
+        `runaway` is the measured wheel speed that stops this hold as a runaway; it is
+        capped at RUNAWAY_SPEED and stays in force until the next wheels command.
+        """
         if maximum is None:
             maximum = stick.speed
         with self.lock:
@@ -198,7 +211,8 @@ class Board:
             if self.guard.accept(stick) is None:
                 return  # an older state arrived late; the newer one is already held
             if stick.target == "wheels":
-                self.hold_maximum = min(maximum, RUNAWAY_SPEED)
+                self.runaway = min(runaway, RUNAWAY_SPEED)
+                self.hold_maximum = min(maximum, self.runaway)
                 self._drive_wheels(stick)
             else:
                 self._drive_gimbal(stick, time.monotonic())
@@ -279,7 +293,7 @@ class Board:
                         self.stop()
                     if self.guard.lease:
                         if any(
-                            abs(float(self.telemetry.get(k, 0))) > RUNAWAY_SPEED for k in ("L", "R")
+                            abs(float(self.telemetry.get(k, 0))) > self.runaway for k in ("L", "R")
                         ):
                             self.stop(emergency=True)
                         elif self.health_error() or time.monotonic() - self.received_at > 0.6:
@@ -321,7 +335,7 @@ class Board:
         ):
             return "硬件反馈不完整或无效"
         if self.telemetry["v"] <= 0 or any(
-            abs(self.telemetry[key]) > RUNAWAY_SPEED for key in ("L", "R")
+            abs(self.telemetry[key]) > self.runaway for key in ("L", "R")
         ):
             return "底盘速度或电压反馈异常"
         # Allow 2 deg of measured servo overshoot at the fast factory speed (2026-10-22,

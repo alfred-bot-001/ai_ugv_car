@@ -9,13 +9,17 @@ MAX_JPEG = 1_048_576
 MAX_AUDIO = 640
 AGENT_PROTOCOL = "agent.v1"
 
-# Web joystick T1 ceiling band (m/s). 2026-10-22, user-approved: the page gets a
-# speed slider up to 0.18, the navigation PWM_LIMIT approved on 2026-10-14, below the
-# 0.3 m/s runaway stop. The floor is 0.07 like nav.WHEEL_FLOOR: the 2026-10-21 probes
-# showed the firmware PID pausing wheels below about 0.06 m/s. The default stays 0.10.
+# Web joystick T1 ceiling band (m/s). The floor is 0.07 like nav.WHEEL_FLOOR: the
+# 2026-10-21 probes showed the firmware PID pausing wheels below about 0.06 m/s. The
+# default stays 0.10 (2026-10-22, user-approved slider, then capped at 0.18).
+# 2026-10-23, user-approved: the ceiling rises to the factory rating of the UGV Rover,
+# 1.3 m/s (Waveshare ugv_rpi config.yaml `max_speed: 1.3` for main_type 2; their web
+# page drives 0.39 / 0.86 / 1.3 m/s on its slow / middle / fast buttons). The runaway
+# stop for the joystick is hardware.RUNAWAY_SPEED above that rating; the navigation
+# bridge keeps its own 0.3 m/s bound (nav.NAV_RUNAWAY_SPEED).
 JOYSTICK_SPEED_MIN = 0.07
 JOYSTICK_SPEED_DEFAULT = 0.10
-JOYSTICK_SPEED_MAX = 0.18
+JOYSTICK_SPEED_MAX = 1.3
 
 
 class Stick(BaseModel):

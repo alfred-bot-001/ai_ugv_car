@@ -41,6 +41,11 @@ OBSERVE_SECONDS = 2.0
 WHEEL_FLOOR = 0.07  # m/s
 # T1 wheel-speed ceiling for navigation (m/s); stays below the Board runaway threshold.
 PWM_LIMIT = 0.18
+# Measured wheel speed that stops an autonomous run as a runaway. This was the global
+# hardware.RUNAWAY_SPEED (0.3, set 2026-10-14) until 2026-10-23, when the web joystick
+# was allowed up to the factory 1.3 m/s (user-approved); navigation never commands more
+# than PWM_LIMIT, so it keeps the tighter bound by passing it to Board.move().
+NAV_RUNAWAY_SPEED = 0.3
 MAX_REQUEST = 4096
 # S0 single-wheel stall (docs/task-autonomy-design.md §3.1 A). Initial values, to be
 # calibrated on the car so normal starts, spins and carpet edges never trip them.
@@ -348,6 +353,7 @@ class NavBridge:
             x, y = stick_from_wheels(left, right)
             board.move(
                 maximum=PWM_LIMIT,
+                runaway=NAV_RUNAWAY_SPEED,
                 stick=Stick(
                     target="wheels",
                     x=x,

@@ -94,10 +94,11 @@ $('#speech-stop').onclick=()=>action($('#speech-stop'),async()=>{await api('cont
 const STREAM_MS=100,DEAD_ZONE=.12;
 function engaged(){return !!(press.wheels||press.gimbal);}
 function connectControl(){if(authStopped)return;controlSocket=socket('control');controlSocket.onmessage=e=>{const data=JSON.parse(e.data);if(data.code==='lease'){lease='';if(engaged())acquireLease();return;}if(data.error){toast(data.error);releaseStick();return;}if(data.online===false&&engaged())releaseStick();};controlSocket.onclose=()=>{releaseStick();if(!authStopped)setTimeout(connectControl,1500);};}
-// Wheels T1 ceiling band, same numbers as tvpet_pi.protocol (0.07..0.18, default 0.10).
-function clampSpeed(value){const speed=Number(value);return Number.isFinite(speed)&&speed>0?Math.min(.18,Math.max(.07,speed)):.1;}
+// Wheels T1 ceiling band, same numbers as tvpet_pi.protocol (0.07..1.3 m/s, default 0.10;
+// 1.3 is the factory rating of the UGV Rover, raised from 0.18 on 2026-10-23).
+function clampSpeed(value){const speed=Number(value);return Number.isFinite(speed)&&speed>0?Math.min(1.3,Math.max(.07,speed)):.1;}
 function stickMessage(target,state,lease,sequence,speed){const message={target,x:state.x,y:state.y,lease,sequence};if(target==='wheels')message.speed=speed;return message;}
-function speedLabel(speed){return speed.toFixed(2)+(speed>=.18?' · 最快':speed<=.07?' · 最慢':speed===.1?' · 默认':'');}
+function speedLabel(speed){return speed.toFixed(2)+(speed>=1.3?' · 最快':speed<=.07?' · 最慢':speed===.1?' · 默认':'');}
 function loadSpeed(){try{return clampSpeed(localStorage.getItem('wheels-speed'));}catch{return .1;}}
 $('#speed').value=loadSpeed();$('#speed-value').textContent=speedLabel(clampSpeed($('#speed').value));
 $('#speed').oninput=()=>{const speed=clampSpeed($('#speed').value);$('#speed-value').textContent=speedLabel(speed);try{localStorage.setItem('wheels-speed',String(speed));}catch{}};
