@@ -492,3 +492,15 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **改动**：`dashboard.html` 与 `navigation.html` 的侧边栏删掉「视频监控」（`#camera`）和「运动控制」（`#controls`）两个链接，只剩设备总览、地图导航、语音交互、人物照片标注；两个链接只是页内锚点，「实时视频」和「底盘速度」区块原样保留。主控台 0.13.0 → 0.13.1，Pi 代理不变（0.9.0）。门禁：ruff / mypy 通过，pytest 371 项通过、覆盖率 83.28%，5 个前端 `.mjs` 测试通过；PR #22 的 CI 只挂主干既有的 `test_sso.py` 两项（主干自身最近一次 CI 同样 failure），本地全过。
 - **部署（2026-10-23 12:28，main `eef4c5a`，PR #22 合并后从主干顶端构建，校验输出 ok）**：部署前核对线上为主控台 0.13.0 / 协议包 0.9.0，等于合并前主干，Mini 上虽有其他 Claude 会话但线上没有更高版本。备份 `backups/20261023-pre-0.13.1/`（`tvpet_console/`、`tvpet_pi/`、`console.sqlite3`，数据库在 bootout 之后复制），装 `releases/0.13.1-ai_ugv_car-eef4c5a/`（主控台 0.13.1 wheel SHA-256 `321822cf…`，与本机构建一致；`uv.lock`），`uv pip install --no-deps --reinstall` 后 `launchctl bootout/bootstrap` 一次成功。核验：`.venv` 内主控台 0.13.1 / 协议包 0.9.0；安装包内 `dashboard.html`（`a248c59b…`）、`navigation.html`（`a2f51820…`）与源码一致、不含两个菜单字样；本机与公网 `/health` 均 `agent_online: true, mode: control`；公网 `/` 为 303（未登录跳转），公网 `app.js` 与源码 SHA-256 一致（本次未改）；重启后 Pi 的 control / audio / video / front / nav 五条内部 WebSocket 全部重连，日志无报错。全程未发运动指令。
 - **回滚**：`launchctl bootout` 后装回 `releases/0.13.0-ai_ugv_car-c650004/ai_tv_pet_console-0.13.0-py3-none-any.whl`，或把备份的 `tvpet_console/` 复制回 `site-packages`，再 `bootstrap`。
+
+## 2026-10-23 导航加固：启动自检、地图会话、到达范围（ugv-nav 0.5.3 / Mini 0.13.2，main `644bb6e`）
+
+用户要求把待办 1～4 做完（第 1 项按「放宽到达范围」批准）。
+
+- **到达范围（用户批准）**：Nav2 目标检查和 NavCtl 最终判定统一为 0.10 m / 0.35 rad（原 0.06 m / 0.15 rad，最终判定原 0.18 rad），配置注释写明日期和理由：轮速低于 0.07 m/s 会抖，原地最慢约 0.8 rad/s，最后 10～20° 收不住。当天一次网页「去这里」停在离目标 13 cm、20° 处。另一个原因是运动安全门：前方 ±45° 内 0.30 m 有障碍就停止前进（2026-10-14 批准的参数，未改），目标离墙太近时到不了。所以页面在目标离障碍不到 35 cm 时提醒，桥接节点也会把安全门的拦截原因写进日志（页面翻成中文）。
+- **建图时误报定位丢失**：`ugv-loc-health` 只在导航控制底盘时才因定位问题停车；建图中 SLAM 修正 0.3～0.5 m、手动遥控或停着时只记日志，不再打断摇杆，也不再留下锁存的安全停车。
+- **加载地图卡住**：`ugv-navd` 切换模式后读新容器日志，等导航（定位模式下还有定位）生命周期管理器报告 `Managed nodes are active`，90 秒没等到就重建容器重试一次，仍失败则任务失败并写明是哪个模块。
+- **旧地图**：中继在地图和状态包里带容器会话标记；页面发现会话变了就清掉旧地图、轨迹和位置，不再把上一个容器的地图当成当前地图。
+- **验证**：ruff、format、mypy；pytest 374 项通过，覆盖率 83%；`.mjs` 全过（新增离墙距离、日志翻译、会话判断用例）。main 上已有、与本次无关的失败：`pi-agent/tests/test_nav.py::test_navigation_keeps_the_tight_runaway_bound_and_the_joystick_restores_it`（干净的 main 上同样失败，来自 0a350d2）和时好时坏的 `test_adapters.py::test_uart_watchdog_and_evidence`。
+- **部署**：ugv-nav 源码备份 `backups/20261023-pre-0.5.3/src.tgz`，镜像 0.5.3（`build-0.5.3.log`），主机 `.venv` 0.5.3，`ugv-navd` 已重启。为不清掉建图中的地图，**没有重建正在运行的容器**（仍是 0.5.2 镜像）；新的到达范围、定位健康、会话标记和安全门日志在下一次「开始建图」或「加载并定位」时生效。Mini `releases/0.13.2-ai_ugv_car-644bb6e/`（主控台 0.13.2、Pi 代理 0.9.0），`/health` 正常，公网脚本已是新版。
+- **回滚**：Mini 装回 `releases/0.13.1-ai_ugv_car-eef4c5a/`；ugv-nav 主机 `.venv` 装回 0.5.2（解开 `backups/20261023-pre-0.5.3/src.tgz` 取 wheel），重启 `ugv-navd`，下次切换模式前把 compose 版本改回 0.5.2。
