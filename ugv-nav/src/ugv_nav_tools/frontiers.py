@@ -14,16 +14,23 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 FREE_MAX = 25  # SLAM Toolbox publishes 0 for free; anything up to this counts as free
 OCCUPIED_MIN = 65
-CLEARANCE_M = 0.40  # goal distance from walls: robot radius 0.17 plus the 0.30 m gate
+# Goal distance from walls: the motion gate stops 0.30 m before an obstacle ahead, so a
+# goal 0.35 m off a wall is reached within the 0.10 m goal tolerance (0.40 left almost
+# no goals in a cluttered study, 2026-10-23).
+CLEARANCE_M = 0.35
 ROBOT_RADIUS_M = 0.20  # passable cells for the reachability search
 MIN_FRONTIER_M = 0.30  # shorter frontiers are scan noise
 MIN_TRAVEL_M = 0.30  # closer targets are where the car already stands
 SEARCH_RADIUS_M = 1.0  # how far from a frontier's centre a goal may sit
+# A first scan leaves one frontier ringing the car; its centre is the car itself. Long
+# frontiers are cut into 1 m tiles so each piece gets its own target facing it.
+SEGMENT_M = 1.0
+FACE_MIN_M = 0.15  # a frontier closer than this gives no useful heading
 NEIGHBOURS_4 = ((1, 0), (-1, 0), (0, 1), (0, -1))
 NEIGHBOURS_8 = NEIGHBOURS_4 + ((1, 1), (1, -1), (-1, 1), (-1, -1))
 
@@ -72,12 +79,17 @@ class Target:
 
 def wall_distance(grid: Grid, max_cells: int) -> list[int]:
     """Cells (8-neighbour steps) to the nearest occupied cell, capped at max_cells."""
+    return distance_to(grid, lambda v: v >= OCCUPIED_MIN, max_cells)
+
+
+def distance_to(grid: Grid, source: Callable[[int], bool], max_cells: int) -> list[int]:
+    """Cells (8-neighbour steps) to the nearest cell whose value matches, capped."""
     far = max_cells
     distance = [far] * (grid.width * grid.height)
     queue: deque[tuple[int, int]] = deque()
     for row in range(grid.height):
         for col in range(grid.width):
-            if grid.value(col, row) >= OCCUPIED_MIN:
+            if source(grid.value(col, row)):
                 distance[row * grid.width + col] = 0
                 queue.append((col, row))
     while queue:
@@ -143,6 +155,14 @@ def frontier_clusters(grid: Grid) -> list[list[tuple[int, int]]]:
     return clusters
 
 
+def segments(cluster: list[tuple[int, int]], tile: int) -> list[list[tuple[int, int]]]:
+    """A cluster split by tile x tile cell squares (a short cluster stays whole)."""
+    pieces: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for col, row in cluster:
+        pieces.setdefault((col // tile, row // tile), []).append((col, row))
+    return list(pieces.values())
+
+
 def candidates(
     grid: Grid,
     robot: tuple[float, float],
@@ -158,6 +178,8 @@ def candidates(
     clearance = math.ceil(CLEARANCE_M / grid.resolution)
     radius = math.ceil(ROBOT_RADIUS_M / grid.resolution)
     walls = wall_distance(grid, clearance + 1)
+    # The whole footprint on known space, so the planner accepts the goal.
+    unknown = distance_to(grid, lambda v: v < 0, radius + 1)
     passable = [
         grid.free(i % grid.width, i // grid.width) and walls[i] >= radius
         for i in range(grid.width * grid.height)
@@ -166,8 +188,10 @@ def candidates(
     cost = reachable(grid, start, passable)
     avoided = list(avoid)
     search = math.ceil(SEARCH_RADIUS_M / grid.resolution)
+    tile = max(1, round(SEGMENT_M / grid.resolution))
     found = []
-    for cluster in frontier_clusters(grid):
+    pieces = [p for c in frontier_clusters(grid) for p in segments(c, tile)]
+    for cluster in pieces:
         length = len(cluster) * grid.resolution
         if length < MIN_FRONTIER_M:
             continue
@@ -177,7 +201,7 @@ def candidates(
         for row in range(max(0, int(cy) - search), min(grid.height, int(cy) + search + 1)):
             for col in range(max(0, int(cx) - search), min(grid.width, int(cx) + search + 1)):
                 i = row * grid.width + col
-                if i not in cost or walls[i] < clearance:
+                if i not in cost or walls[i] < clearance or unknown[i] < radius:
                     continue
                 gap = math.hypot(col - cx, row - cy)
                 if gap <= search and (best is None or gap < best[0]):
@@ -192,7 +216,10 @@ def candidates(
         if any(math.hypot(x - ax, y - ay) < avoid_radius_m for ax, ay in avoided):
             continue
         fx, fy = grid.centre(round(cx), round(cy))
-        yaw = math.atan2(fy - y, fx - x) if math.hypot(fx - x, fy - y) > 1e-6 else 0.0
+        if math.hypot(fx - x, fy - y) >= FACE_MIN_M:
+            yaw = math.atan2(fy - y, fx - x)
+        else:  # too close to tell: keep the heading the car arrives with
+            yaw = math.atan2(y - robot[1], x - robot[0])
         found.append(Target(x, y, yaw, length, travel))
     found.sort(key=lambda t: (t.travel_m, -t.frontier_m))
     return found[:limit]

@@ -5,11 +5,13 @@ import math
 import pytest
 
 from ugv_nav_tools.frontiers import (
+    CLEARANCE_M,
     Grid,
     candidates,
     explored_m2,
     frontier_clusters,
     reachable,
+    segments,
     wall_distance,
 )
 
@@ -69,7 +71,7 @@ def test_doorway_target_is_clear_reachable_and_faces_the_unknown() -> None:
     assert targets, "the open doorway should give a frontier"
     first = targets[0]
     col, row = grid.cell(first.x, first.y) or (0, 0)
-    assert wall_distance(grid, 20)[row * grid.width + col] >= math.ceil(0.40 / RES)
+    assert wall_distance(grid, 20)[row * grid.width + col] >= math.ceil(CLEARANCE_M / RES)
     assert first.travel_m >= 0.30 and first.frontier_m >= 0.30
     assert abs(first.yaw) < math.pi / 2  # the unknown is to the right (east)
 
@@ -86,3 +88,27 @@ def test_failed_targets_are_avoided_and_explored_area_counts_free_cells() -> Non
     assert all(math.hypot(t.x - first.x, t.y - first.y) >= 0.3 for t in again)
     assert explored_m2(grid_from(["..#?"])) == pytest.approx(2 * RES * RES)
     assert first.to_json()["x"] == round(first.x, 3)
+
+
+def test_a_frontier_ringing_the_car_gives_targets_all_around() -> None:
+    size, ring = 80, 30  # 4 m square, known free out to 1.5 m from the centre
+    rows = []
+    for r in range(size):
+        line = ""
+        for c in range(size):
+            line += "." if math.hypot(c - size / 2, r - size / 2) < ring else "?"
+        rows.append(line)
+    grid = grid_from(rows)
+    centre = size / 2 * RES
+    targets = candidates(grid, robot=(centre, centre))
+    assert len(targets) >= 4
+    for target in targets:  # each faces outwards, towards its piece of the frontier
+        outward = math.atan2(target.y - centre, target.x - centre)
+        assert abs(math.atan2(math.sin(target.yaw - outward), math.cos(target.yaw - outward))) < 1.0
+        assert math.hypot(target.x - centre, target.y - centre) > 0.3
+
+
+def test_segments_cut_long_frontiers_by_tile() -> None:
+    line = [(c, 0) for c in range(45)]
+    assert [len(p) for p in segments(line, 20)] == [20, 20, 5]
+    assert segments([(1, 1), (2, 1)], 20) == [[(1, 1), (2, 1)]]

@@ -396,7 +396,8 @@ class Navd:
                 area = summary["explored_m2"]
                 return (
                     "ok",
-                    f"探索完成：没有能去的未探索边界了（已探索 {area} m²），记得保存地图",
+                    f"探索结束：没有能安全开到的未探索边界了（已探索 {area} m²）。"
+                    "窄处请用遥控补图，记得保存地图",
                     (summary | {"target": None}),
                 )
             target = targets[0]
