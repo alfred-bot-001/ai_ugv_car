@@ -1,7 +1,7 @@
 name: ugv-nav
 services:
   ugv-nav:
-    image: ai-ugv-car/ugv-nav:${UGV_NAV_VERSION:-0.5.1}
+    image: ai-ugv-car/ugv-nav:${UGV_NAV_VERSION:-0.5.2}
     build: .
     container_name: ugv-nav
     network_mode: host
@@ -14,8 +14,8 @@ services:
     volumes:
       - /home/ws/deploy/ai-tv-pet-agent/nav:/board:ro
       # Household data lives apart from the application (2026-10-22, user request).
-      - /home/ws/agent-data/ai-ugv-car/maps:/maps
-      - /home/ws/agent-data/ai-ugv-car/reports:/reports
+      - /home/ws/workspace-agent/agent-data/ai-ugv-car/ugv-nav/maps:/maps
+      - /home/ws/workspace-agent/agent-data/ai-ugv-car/ugv-nav/reports:/reports
     # ugv-navctl writes .env next to this file to switch mapping / localization.
     environment:
       UGV_NAV_LAUNCH: ${UGV_NAV_LAUNCH:-n1_odometry}

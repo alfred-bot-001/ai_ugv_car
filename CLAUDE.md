@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | `robot-console/` | `tvpet_console`（ai-tv-pet-console 0.10.0），FastAPI 主控台，网页在 `src/tvpet_console/web/` | Mini（ssh `agent001`） |
 | `pi-agent/` | `tvpet_pi`（ai-tv-pet-pi-agent 0.8.0），设备代理，唯一的底盘 UART 所有者，含导航桥 `nav.py` | 车上 Pi 5（ssh `agent003`，用户 ws，免密 sudo） |
-| `ugv-nav/` | `ugv_nav_tools`（ai-ugv-car-nav-tools 0.5.1）+ ROS2 Humble 容器（SLAM Toolbox、Nav2、RF2O、EKF）+ 主机服务 `ugv-navd` | Pi 的 docker 容器 `ugv-nav` |
+| `ugv-nav/` | `ugv_nav_tools`（ai-ugv-car-nav-tools 0.5.2）+ ROS2 Humble 容器（SLAM Toolbox、Nav2、RF2O、EKF）+ 主机服务 `ugv-navd` | Pi 的 docker 容器 `ugv-nav` |
 
 包名、launchd 标签、systemd 服务名、部署目录**刻意沿用 ai-tv-pet-***，线上部署依赖它们，不要改名。
 
@@ -58,7 +58,7 @@ uv run pytest --cov=tvpet_console --cov=tvpet_pi --cov=ugv_nav_tools --cov-fail-
 
 ## 隐私
 
-- 地图（`room-*.pgm/yaml`）就是家里平面布局，只存在 Pi 的数据目录 `/home/ws/agent-data/ai-ugv-car/maps/`（巡航报告在同级 `reports/`；数据与应用分开，不放进 `deploy/`），**不进 Git、不上传**，除非用户同意。
+- 地图（`room-*.pgm/yaml`）就是家里平面布局，只存在 Pi 的数据目录 `/home/ws/workspace-agent/agent-data/ai-ugv-car/ugv-nav/maps/`（巡航报告在同级 `reports/`；数据与应用分开，不放进 `deploy/`），**不进 Git、不上传**，除非用户同意。
 - 不把 IP、token、密码、证书写进仓库；只写「去哪个私有文件找」。
 
 ## 硬件要点

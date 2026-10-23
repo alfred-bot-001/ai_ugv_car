@@ -53,8 +53,9 @@ class Settings:
     deploy: Path = Path("/home/ws/deploy/ugv-nav")
     board: Path = Path("/home/ws/deploy/ai-tv-pet-agent/nav")
     # Saved maps and patrol reports are household data, kept apart from the deployed
-    # application (2026-10-22, user request), like the Mini's workspace-agent/agent-data.
-    data: Path = Path("/home/ws/agent-data/ai-ugv-car")
+    # application (2026-10-22, user request) under ~/workspace-agent/agent-data/<project>/
+    # <service>/, the global layout for runtime data.
+    data: Path = Path("/home/ws/workspace-agent/agent-data/ai-ugv-car/ugv-nav")
     container: str = "ugv-nav"
 
     @property
