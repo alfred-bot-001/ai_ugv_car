@@ -411,3 +411,12 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **部署**：从 main 顶端 `6d16c48` 构建（校验输出 ok）。源码备份 `backups/20261023-pre-0.5.2/src.tgz`，构建日志 `build-0.5.2.log`，镜像 0.5.2，主机 `.venv` 0.5.2，`ugv-navd` 已重启；经 `ugv-navd` 重新进入建图模式。只动 ugv-nav，Mini 主控台和 Pi 代理（0.8.1，另一会话部署）未碰。
 - **核验**：容器 0.5.2 healthy，挂载新目录，容器内 uid 1000 可写 `maps/`、`reports/`；`ugv-navd` 地图列表含 `room-study-room`；导航中继已连接；`arm.json` 为关闭；全程未发运动指令。ruff、format、mypy、ugv-nav 78 项测试通过。CI 的 `verify` 失败在 `robot-console/tests/test_sso.py` 两项，main 自 `921f86e` 之后一直如此，与本次无关：测试用 `created=0` 模拟过期，在开机不到 300 秒的 CI 机器上 `time.monotonic()` 还不到 TTL。
 - **回滚**：停容器，把 `/home/ws/workspace-agent/agent-data/ai-ugv-car/ugv-nav` `mv` 回 `/home/ws/agent-data/ai-ugv-car`，`UGV_NAV_VERSION=0.5.1` 重建容器，主机 `.venv` 装回 0.5.1（`src/dist` 需放回 0.5.1 wheel，或解开备份的 `src.tgz`），重启 `ugv-navd`。
+## 2026-10-23 摇杆叠在视频上 + 游戏式键盘（Mini 0.11.0，未部署）
+
+用户要求：操纵杆像游戏手柄一样放在实时画面里，左下角底盘、右下角云台；键盘 W/A/S/D 开底盘、方向键 ↑↓←→ 转云台；设备总览页和地图导航页一起改。
+
+- **页面**：两页的圆盘都移进 `.video-stage`（`stage-sticks` 容器，宽度 `clamp(96px,26%,190px)`，随画面缩放，全屏时一起放大），半透明深色底、键帽标注；总览页全屏按钮挪到画面右上角。地图页新增云台圆盘（之前只有底盘），门槛跟 `gimbal_ready`，自主导航中云台仍可转。右侧「底盘移动 / 摄像头云台」面板保留门控徽章、说明、速度滑杆、反馈和「停止」按钮；地图页「遥控」块改为文字说明。
+- **键盘**：新文件 `web/keypad.js`（两页共用，纯函数有 `test_keypad_frontend.mjs`）：`KEY_BINDINGS` 按 `event.code` 映射，整页监听（不必先点圆盘），同时按两个键合成斜向并压到单位圆，松开某个目标的最后一个键才停该目标；重复按键、带 Ctrl/Alt/⌘、输入法合成、输入框/文本域/下拉框/可编辑区、打开的对话框一律不响应；窗口失焦清空按键并照旧停车。圆点位移半径改按圆点实际尺寸算（`stickRadius`），不再写死 35px。
+- **中继不变**：仍是按住的状态每 100 ms 发到 Mini，拖动 40 ms 节流；停止、租约、急停逻辑未动，Pi 代理无改动。
+- **验证**：门禁 364 项通过，覆盖率 83%；`node` 跑 5 个 `.mjs` 前端测试通过。本机 `CONSOLE_DEV_HTTP=1` 预览（设备离线）：桌面 1440 与手机 375 两页无横向溢出、无脚本错误；用脚本模拟按键，W+D 得 (0.71, 0.71)、← 得云台 (−1, 0)，松开后归零；文本域里按 W 不触发。实车按键驱动待用户在场时实测。
+- **回滚**：Mini 装回 `releases/` 里上一版主控台 wheel（0.10.0）并重启 launchd。
