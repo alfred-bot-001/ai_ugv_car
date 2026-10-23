@@ -439,3 +439,11 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **验证**：ruff、format、mypy、robot-console 187 项测试通过，`.mjs` 前端测试全部通过（新增菜单可用性用例）；本机 Playwright 用假设备和假 `ugv-navd` 走完右键「设置位置」（含朝向点击）、右键「去这里」、取消、Esc，桌面 1440 与手机 390 无横向溢出、无脚本错误。CI 一次全过，另一次只挂已知的 `test_sso.py` 两项（与 CI 机器开机时长有关）。
 - **部署**：`releases/0.12.0-ai_ugv_car-f1e890a/`（主控台 0.12.0、Pi 代理 0.8.1、`uv.lock`），在 0.11.1（状态条，另一会话刚部署）之上发布，包含它的改动。`/health` `agent_online: true`，公网 `navigation.js` / `navmap.js` 已是新版。Pi 未改动。
 - **回滚**：装回 `releases/0.11.1-ai_ugv_car-685d339/` 后 `launchctl bootout/bootstrap`。
+
+## 2026-10-23 云台快捷键改为 I/J/K/L（Mini 0.12.1，未部署）
+
+用户反馈：模拟驾驶页面用方向键 ↑↓←→ 转云台，和浏览器用方向键滚动页面冲突；要求改成 I/J/K/L（I 上、K 下、J 左、L 右）。
+
+- **改动**：`web/keypad.js` 的 `KEY_BINDINGS` 云台四键由 `ArrowUp/Down/Left/Right` 改为 `KeyI/KeyK/KeyJ/KeyL`，方向键不再被页面截获，恢复浏览器默认滚动。总览页和地图页云台圆盘的键帽、`aria-label`、面板说明和 `<kbd>` 提示同步改为 I/J/K/L；W/A/S/D、中继、停止与租约逻辑未动，Pi 代理无改动。
+- **验证**：`test_keypad_frontend.mjs` 改为断言 I/J/K/L 绑定云台、方向键不在绑定表里、两页 HTML 不再标注方向键；门禁 364 项通过、覆盖率 83%，ruff / format / mypy 干净；`node` 跑 5 个 `.mjs` 前端测试通过。本机 `CONSOLE_DEV_HTTP=1` 预览（设备离线）两页核对：云台圆盘键帽为 I/K/J/L，`aria-label` 与 `<kbd>` 提示同步；向 `document` 派发 KeyI/J/K/L 的 keydown 被页面截获（`defaultPrevented`），ArrowUp/Left/Right 不再截获，交回浏览器滚动。实车按 I/J/K/L 转云台待用户在场时实测。
+- **回滚**：Mini 装回 `releases/0.12.0-ai_ugv_car-f1e890a/` 的主控台 wheel（0.12.0）并 `launchctl bootout/bootstrap`。

@@ -10,7 +10,7 @@
 
 .recognition-strip{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:0 20px 16px;font-size:12px;color:var(--muted)}.video-stage #video-frame{display:block}.video-stage #video-frame[hidden]{display:none}
 .segmented{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}.segmented button{border:0;border-radius:0;min-height:40px;padding:8px 12px;background:white;color:var(--muted)}.segmented button+button{border-left:1px solid var(--line)}.segmented button[aria-pressed=true]{background:var(--mint);color:var(--green)}
-/* Joysticks over the live picture, game-pad style: wheels bottom-left (W/A/S/D), gimbal bottom-right (arrow keys). */
+/* Joysticks over the live picture, game-pad style: wheels bottom-left (W/A/S/D), gimbal bottom-right (I/J/K/L). */
 .video-stage #video-placeholder{padding-bottom:calc(26% + 24px)}
 .stage-sticks{position:absolute;inset:auto 16px 16px;display:flex;justify-content:space-between;align-items:flex-end;pointer-events:none;z-index:2}
 .stage-sticks .joystick{pointer-events:auto;width:clamp(96px,26%,190px);height:auto;aspect-ratio:1;background:#152f2866;border:2px solid #ffffffb3;box-shadow:0 2px 12px #00000040;backdrop-filter:blur(2px)}

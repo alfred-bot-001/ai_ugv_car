@@ -359,7 +359,7 @@ $('#map-select').onchange=()=>renderControls();
 // page relays every held state ten times a second (no per-command handshake). Stop by
 // dragging a knob back to the middle, tapping the middle, 取消导航 or the emergency
 // stop; hiding the page or losing the link also stops. The wheels pad sits bottom-left
-// of the live picture (keys W/A/S/D), the gimbal pad bottom-right (arrow keys).
+// of the live picture (keys W/A/S/D), the gimbal pad bottom-right (keys I/J/K/L).
 const STREAM_MS=100,DEAD_ZONE=.12,TARGETS=['wheels','gimbal'];
 // The speed chosen with the dashboard slider (same 0.07..0.18 band as tvpet_pi.protocol).
 function wheelSpeed(){try{const speed=Number(localStorage.getItem('wheels-speed'));return Number.isFinite(speed)&&speed>0?Math.min(.18,Math.max(.07,speed)):.1;}catch{return .1;}}
@@ -397,7 +397,7 @@ for(const element of document.querySelectorAll('.joystick')){
   for(const kind of ['pointerup','pointercancel','lostpointercapture'])element.addEventListener(kind,()=>endDrag(element));
 }
 // Keyboard, game-pad style anywhere on the page (keypad.js): W/A/S/D hold the wheels,
-// the arrow keys hold the gimbal; the held keys add up and letting go of the last one
+// I/J/K/L hold the gimbal; the held keys add up and letting go of the last one
 // of a target stops it. Fields and the confirmation dialog keep their keys.
 const heldKeys=new Set();
 function keyStick(target){const state=keypadVector(heldKeys,target);if(!state){stopStick(target);return;}press[target]=state;knob(target,state.x,state.y);if(dragging===target)dragging=null;sendSoon();}
