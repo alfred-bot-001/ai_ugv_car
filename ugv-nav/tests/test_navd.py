@@ -374,7 +374,7 @@ def test_explore_drives_frontier_to_frontier_until_none_is_left(tmp_path: Path) 
     navd.handle({"op": "explore"})
     deferred.run_all()
     assert navd.job is not None and navd.job.state == "ok"
-    assert navd.job.message.startswith("探索完成") and "8.5 m²" in navd.job.message
+    assert navd.job.message.startswith("探索结束") and "8.5 m²" in navd.job.message
     assert navd.job.result == {"legs": 2, "reached": 2, "explored_m2": 8.5, "target": None}
     assert run.armed_during_navigate == [True, True]
     assert json.loads((navd.ctl.settings.board / "arm.json").read_text()) == {"enabled": False}
