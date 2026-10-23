@@ -401,3 +401,13 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **回滚**：Mini 装回 `releases/0.9.1-ai_ugv_car-f0dc259/` 两个 wheel 后重启 launchd；Pi 装回 `releases/0.7.1/`（或 `backups/20261022-pre-0.8.0/` 的目录）后重启服务。旧版 Mini 会发 `challenge` 字段而新 Pi 会拒绝，所以先回滚 Mini 再回滚 Pi，或两边一起回。
 - **未做**：浏览器端真人拖动体验（需家庭账号登录后在 `https://car.aimaker.vip/` 试：拖动圆点松手不回弹、拖回中间停、两个圆盘同时用）；底盘不回弹模式的落地试驾。
 - **部署（2026-10-22 23:40，main `12fbf92`，PR #2 合并后从主干顶端构建）**：Pi 装 0.8.1（`releases/0.8.1/`，备份 `backups/20261022-pre-0.8.1/`），Mini 装 `releases/0.10.0-ai_ugv_car-12fbf92/`（主控台 0.10.0 不变、Pi 代理 0.8.1，备份 `backups/20261022-pre-0.10.0-b/`）。核验同上：服务 active、`/health` `agent_online: true`、公网 `app.js` 哈希一致。回滚：Pi 装回 `releases/0.8.0/`（或 0.7.1 并同时回滚 Mini）。
+
+## 2026-10-23 地图数据目录对齐全局规范（ugv-nav 0.5.2，main `6d16c48`）
+
+全局规范 `~/.claude/development-practices.md` 规定运行数据放 `~/workspace-agent/agent-data/<项目>/<服务>/`；0.5.1 放在 `/home/ws/agent-data/ai-ugv-car/`，少了 `workspace-agent` 和服务一层。用户回复「可以上」后迁移（PR #4）。
+
+- **改动**：NavCtl 默认数据目录和容器两个挂载改为 `/home/ws/workspace-agent/agent-data/ai-ugv-car/ugv-nav/{maps,reports}`，其余不变。Pi 原本就有 `/home/ws/workspace-agent`（与 Mini 同结构），新建 `agent-data/`、`ai-ugv-car/`（均 0700）。
+- **迁移**：停容器后同盘 `mv`，14 个地图文件（7 张图，含用户 2026-10-22 22:44 在网页上保存的 `room-study-room`）和巡航报告 sha256 迁移前后一致；空的 `/home/ws/agent-data` 已删除。
+- **部署**：从 main 顶端 `6d16c48` 构建（校验输出 ok）。源码备份 `backups/20261023-pre-0.5.2/src.tgz`，构建日志 `build-0.5.2.log`，镜像 0.5.2，主机 `.venv` 0.5.2，`ugv-navd` 已重启；经 `ugv-navd` 重新进入建图模式。只动 ugv-nav，Mini 主控台和 Pi 代理（0.8.1，另一会话部署）未碰。
+- **核验**：容器 0.5.2 healthy，挂载新目录，容器内 uid 1000 可写 `maps/`、`reports/`；`ugv-navd` 地图列表含 `room-study-room`；导航中继已连接；`arm.json` 为关闭；全程未发运动指令。ruff、format、mypy、ugv-nav 78 项测试通过。CI 的 `verify` 失败在 `robot-console/tests/test_sso.py` 两项，main 自 `921f86e` 之后一直如此，与本次无关：测试用 `created=0` 模拟过期，在开机不到 300 秒的 CI 机器上 `time.monotonic()` 还不到 TTL。
+- **回滚**：停容器，把 `/home/ws/workspace-agent/agent-data/ai-ugv-car/ugv-nav` `mv` 回 `/home/ws/agent-data/ai-ugv-car`，`UGV_NAV_VERSION=0.5.1` 重建容器，主机 `.venv` 装回 0.5.1（`src/dist` 需放回 0.5.1 wheel，或解开备份的 `src.tgz`），重启 `ugv-navd`。
