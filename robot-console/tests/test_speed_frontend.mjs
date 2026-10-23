@@ -11,11 +11,14 @@ const context = {};
 vm.runInNewContext(source.slice(start, end) + '\nthis.clampSpeed=clampSpeed;this.stickMessage=stickMessage;', context);
 const {clampSpeed, stickMessage} = context;
 
-// Anything unreadable falls back to the historical 0.10 default; the band is 0.07..0.18.
+// Anything unreadable falls back to the historical 0.10 default; the band is 0.07..1.3
+// (the factory rating of the UGV Rover, raised from 0.18 on 2026-10-23).
 assert.equal(clampSpeed(undefined), 0.1);
 assert.equal(clampSpeed('abc'), 0.1);
 assert.equal(clampSpeed('0.15'), 0.15);
-assert.equal(clampSpeed(0.3), 0.18);
+assert.equal(clampSpeed(0.3), 0.3);
+assert.equal(clampSpeed(1.3), 1.3);
+assert.equal(clampSpeed(2), 1.3);
 assert.equal(clampSpeed(0.01), 0.07);
 
 const wheels = stickMessage('wheels', {x: 0.5, y: -1}, 'lease-x', 7, 0.15);

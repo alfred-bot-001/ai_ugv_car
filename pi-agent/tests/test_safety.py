@@ -109,9 +109,10 @@ def test_wheels_hardware_gate_and_malformed_input() -> None:
 def test_stick_speed_defaults_to_010_and_stays_within_the_joystick_band() -> None:
     base = {"target": "wheels", "x": 0, "y": 1, "lease": "l" * 16}
     assert Stick.model_validate({**base, "sequence": 1}).speed == 0.10
+    assert Stick.model_validate({**base, "sequence": 1, "speed": 1.3}).speed == 1.3
     assert Stick.model_validate({**base, "sequence": 1, "speed": 0.18}).speed == 0.18
     assert Stick.model_validate({**base, "sequence": 1, "speed": 0.07}).speed == 0.07
-    for speed in (0.19, 0.06, 0, -0.1, float("nan")):
+    for speed in (1.31, 0.06, 0, -0.1, float("nan")):
         with pytest.raises(ValidationError):
             Stick.model_validate({**base, "sequence": 1, "speed": speed})
 

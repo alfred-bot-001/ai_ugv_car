@@ -456,3 +456,15 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **改动**：`web/dashboard.html` 右栏改为三张卡片：「底盘速度」（标题旁保留 `#gate-wheels` 验收/离线徽章，一行 W/A/S/D、I/J/K/L 与「拖回中间才停」提示，`#speed` 滑杆不变）→「语音交互」（整段原样移入，`#voice` 锚点和侧栏链接不变）→「现场控制保护」（文案里的「按『停止』」改为「按『紧急停止』」）。删掉的元素：两张卡的操作说明、`#gate-gimbal`、`#feedback-wheels/gimbal` 硬件反馈行、「停止移动」「停止云台」按钮。`web/app.js` 的 `render()` 对 `#gate-*`、`#feedback-*` 改为存在才写，`[data-stop]` 处理器在没有按钮时自然为空；控制协议、租约、键盘和圆盘逻辑未动。`web/style.css`：≤1200px 时右栏两列排为「底盘速度｜现场控制保护」一行、语音交互整行，≤760px 仍按 视频 → 底盘速度 → 语音 → 诊断 → 保护 的顺序；地图页不受影响。
 - **验证**：门禁 364 项通过、覆盖率 83%，ruff / format / mypy 干净；`node` 跑 5 个 `.mjs` 前端测试通过（`test_keypad_frontend.mjs` 仍断言总览页含 I/J/K/L `<kbd>` 提示）。本机 `CONSOLE_DEV_HTTP=1` 预览（设备离线）在 1720px 与 1000px 宽核对布局，控制台无报错。
 - **回滚**：Mini 装回 `releases/0.12.1-ai_ugv_car-0790c3b/` 的主控台 wheel（0.12.1）并 `launchctl bootout/bootstrap`。
+
+## 2026-10-23 摇杆速度上限放到官方满速 1.3 m/s（Mini 0.13.0 / Pi 0.9.0）
+
+用户反馈：现在的速度远没到官方小车的最快速度，要求按官方速度调整。核对微雪官方 `ugv_rpi`（本机 `~/workspace-agent/projects/irobot/ugv_rpi/`）：`config.yaml` 对 `main_type: 2`（UGV Rover）写 `max_speed: 1.3`、`slow_speed: 0.2`，官方网页 `templates/control.js` 的慢/中/快三档系数 0.3 / 0.66 / 1.0 对应约 0.39 / 0.86 / 1.3 m/s，默认慢档；官方 wiki 规格表同样是最高 1.3 m/s。我们原来的上限是：网页滑杆 0.07～0.18、Pi `Stick.speed` 校验 ≤ 0.18、Pi 失控急停 `RUNAWAY_SPEED` 0.3 m/s，三道都卡在官方的七分之一以下。
+
+- **用户批准的数值（2026-10-23）**：摇杆上限 1.3 m/s（官方额定）；失控急停绝对阈值 1.6 m/s（额定值加上低速实测约 25% 的闭环超调：0.10 指令实测 0.127）；导航桥保留 0.3 m/s 的失控阈值。下限 0.07、默认 0.10 不变，滑杆设置仍记在浏览器 `wheels-speed`。
+- **Pi 代理 0.9.0**：`protocol.JOYSTICK_SPEED_MAX` 0.18 → 1.3；`hardware.RUNAWAY_SPEED` 0.3 → 1.6；`Board.move()` 新增 `runaway` 参数（上限封顶 `RUNAWAY_SPEED`），记在 `Board.runaway`，看门狗急停与 `health_error()` 都按它判断；`nav.py` 新增 `NAV_RUNAWAY_SPEED = 0.3` 并在每条导航命令里传给 `move()`，所以自主导航（`PWM_LIMIT` 仍 0.18）的失控保护没有放松。导航结束后阈值保持 0.3，下一条摇杆命令才回到 1.6。各常量注释都写了日期和理由。
+- **Mini 0.13.0**：在 0.12.2（右栏精简，另一会话）之上变基。「底盘速度」卡的滑杆 `max` 0.18 → 1.3（步进 0.01），`app.js` / `navigation.js` 的 clamp 同步改为 1.3，「最快」标签在 1.3 显示；滑杆下加一行小字「m/s，上限 1.3 为官方满速；0.4 以上请在开阔场地」（`.speed` 改为可换行）。其余停止机制（松手不回弹但圆点归中即停、失焦/切后台/断线/遥测过期 0.6 s/急停、固件 T136=300 ms）不变。
+- **测试**：`test_safety` 的速度带改为 1.3 合法、1.31 非法；`test_nav` 新增两项：各模式上限与急停阈值的顺序（0.18 < 0.3，1.3 < 1.6），以及用读线程喂遥测验证导航命令后 0.31 m/s 触发看门狗急停并写零速、摇杆命令后 1.3 m/s 不触发。前端 `test_speed_frontend.mjs` 改为 1.3 封顶。
+- **验证**：本机完整门禁通过（ruff、format、mypy、365 项测试、覆盖率 83%）；`node` 跑 5 个 `.mjs` 前端测试通过。`uv.lock` 只更新两个包的版本号。CI 只挂主干既有的 `test_sso.py` 两项偶发失败。实车尚未试驾。
+- **安全提醒**：1.3 m/s 在室内很快，首次试驾必须用户在场、场地清空，建议从 0.4 左右逐级往上；急停锁定后要在页面「解除急停」。与 Nav2 的 0.10 m/s 巡航速度无关，导航速度本次未动。
+- **回滚**：Pi 装回 `releases/0.8.1/`（两个环境），Mini 装回 `releases/0.12.2-…/` 或 `releases/0.12.1-ai_ugv_car-0790c3b/` 的主控台 wheel；旧 Pi 会拒绝新页面 0.18 以上的速度（校验错误、车不动），所以回滚时先回 Mini 再回 Pi，或两边一起回。

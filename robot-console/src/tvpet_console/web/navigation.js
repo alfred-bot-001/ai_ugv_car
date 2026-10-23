@@ -361,8 +361,8 @@ $('#map-select').onchange=()=>renderControls();
 // stop; hiding the page or losing the link also stops. The wheels pad sits bottom-left
 // of the live picture (keys W/A/S/D), the gimbal pad bottom-right (keys I/J/K/L).
 const STREAM_MS=100,DEAD_ZONE=.12,TARGETS=['wheels','gimbal'];
-// The speed chosen with the dashboard slider (same 0.07..0.18 band as tvpet_pi.protocol).
-function wheelSpeed(){try{const speed=Number(localStorage.getItem('wheels-speed'));return Number.isFinite(speed)&&speed>0?Math.min(.18,Math.max(.07,speed)):.1;}catch{return .1;}}
+// The speed chosen with the dashboard slider (same 0.07..1.3 m/s band as tvpet_pi.protocol).
+function wheelSpeed(){try{const speed=Number(localStorage.getItem('wheels-speed'));return Number.isFinite(speed)&&speed>0?Math.min(1.3,Math.max(.07,speed)):.1;}catch{return .1;}}
 function engaged(){return !!(press.wheels||press.gimbal);}
 function connectControl(){
   if(stopped||controlSocket)return;
