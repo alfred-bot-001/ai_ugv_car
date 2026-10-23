@@ -301,7 +301,7 @@ def test_crashing_job_still_finishes(tmp_path: Path) -> None:
 def test_socket_is_private_and_answers_json(tmp_path: Path) -> None:
     navd, _, _ = make_navd(tmp_path)
     assert json.loads(respond(navd, b"not json"))["ok"] is False
-    assert json.loads(respond(navd, b'{"op": "maps"}')) == {"ok": True, "maps": []}
+    assert json.loads(respond(navd, b'{"op": "maps"}')) == {"ok": True, "maps": [], "default": None}
     with tempfile.TemporaryDirectory(dir="/tmp") as short:
         path = Path(short) / "run" / "ops.sock"
         stopping = threading.Event()
@@ -424,3 +424,37 @@ def test_explore_stops_when_cancelled(tmp_path: Path) -> None:
     deferred.run_all()
     assert navd.job is not None and navd.job.state == "cancelled"
     assert run.armed_during_navigate == []
+
+
+def test_map_admin_requests(tmp_path: Path) -> None:
+    navd, _, deferred = make_navd(tmp_path)
+    maps = navd.ctl.settings.maps
+    write_map(maps, "room")
+    write_map(maps, "study")
+    assert navd.handle({"op": "default", "map": "room"}) == {"ok": True, "default": "room"}
+    listed = navd.handle({"op": "maps"})
+    assert listed["default"] == "room" and {m["name"] for m in listed["maps"]} == {"room", "study"}
+    png = navd.handle({"op": "preview", "map": "room"})
+    assert png["meta"]["width"] == 10 and png["png"].startswith("iVBOR")
+    assert navd.handle({"op": "rename", "map": "room", "to": "living"}) == {
+        "ok": True,
+        "renamed": "living",
+    }
+    assert navd.handle({"op": "maps"})["default"] == "living"
+    localized(navd, "study")
+    with pytest.raises(ValueError, match="正在用这张地图"):
+        navd.handle({"op": "delete", "map": "study"})
+    trashed = navd.handle({"op": "delete", "map": "living"})
+    assert trashed["trash"].startswith("living-")
+    assert [m["name"] for m in navd.handle({"op": "maps"})["maps"]] == ["study"]
+    navd.handle({"op": "mapping"})  # a running job blocks housekeeping
+    with pytest.raises(ValueError, match="还没完成"):
+        navd.handle({"op": "default", "map": "study"})
+    deferred.run_all()
+    for bad in (
+        {"op": "rename", "map": "study"},
+        {"op": "rename", "map": "study", "to": "../x"},
+        {"op": "delete", "map": "study", "to": "x"},
+    ):
+        with pytest.raises(ValueError):
+            navd.handle(bad)

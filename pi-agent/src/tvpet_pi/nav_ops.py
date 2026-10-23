@@ -16,8 +16,22 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 NAVD_SOCKET = Path("/home/ws/deploy/ugv-nav/run/ops.sock")
 COORD_LIMIT = 100.0  # m; same bound as ugv-navd
 MAX_REPLY = 262144  # the map list is the largest reply
-NavOp = Literal["status", "maps", "mapping", "save", "localize", "pose", "goal", "explore", "stop"]
-MAP_OPS = ("save", "localize")
+NavOp = Literal[
+    "status",
+    "maps",
+    "mapping",
+    "save",
+    "localize",
+    "pose",
+    "goal",
+    "explore",
+    "stop",
+    "preview",
+    "rename",
+    "delete",
+    "default",
+]
+MAP_OPS = ("save", "localize", "preview", "rename", "delete", "default")
 POSE_OPS = ("pose", "goal")
 # What the map page log says when the operator starts something.
 OP_TEXT = {
@@ -28,6 +42,9 @@ OP_TEXT = {
     "goal": "导航去目标点",
     "explore": "自动探索",
     "stop": "取消导航",
+    "rename": "地图改名",
+    "delete": "删除地图（移到回收区）",
+    "default": "设为默认地图",
 }
 
 
@@ -37,6 +54,7 @@ class NavCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")
     op: NavOp
     map: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    to: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     x: float | None = Field(default=None, strict=True, ge=-COORD_LIMIT, le=COORD_LIMIT)
     y: float | None = Field(default=None, strict=True, ge=-COORD_LIMIT, le=COORD_LIMIT)
     yaw: float | None = Field(default=None, strict=True, ge=-2 * math.pi, le=2 * math.pi)
@@ -44,7 +62,9 @@ class NavCommand(BaseModel):
     @model_validator(mode="after")
     def fields_match_op(self) -> "NavCommand":
         if (self.map is not None) != (self.op in MAP_OPS):
-            raise ValueError("a map name goes with save and localize only")
+            raise ValueError("a map name goes with the saved-map operations only")
+        if (self.to is not None) != (self.op == "rename"):
+            raise ValueError("a new name goes with rename only")
         pose = (self.x, self.y, self.yaw)
         if self.op in POSE_OPS:
             if any(v is None or not math.isfinite(v) for v in pose):
@@ -58,6 +78,8 @@ class NavCommand(BaseModel):
 
     def describe(self) -> str:
         text = OP_TEXT.get(self.op, self.op)
+        if self.to:
+            return f"{text} {self.map} → {self.to}"
         if self.map:
             return f"{text} {self.map}"
         if self.op in POSE_OPS:

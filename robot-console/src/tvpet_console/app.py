@@ -1,8 +1,11 @@
 """Authenticated web core and independent outbound device transport endpoints."""
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import json
+import re
 import sys
 import time
 from collections import OrderedDict
@@ -497,7 +500,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def nav_command(request: Request, body: NavCommand) -> dict[str, Any]:
         """Map page controls; the car's ugv-navd runs them and holds any motion window."""
         await identity(request, mutate=True)
-        if body.op in ("status", "maps"):
+        if body.op in ("status", "maps", "preview"):
             raise HTTPException(404, "未知导航操作")
         result = await rpc("nav", body.payload(), timeout=4, event=f"nav.{body.op}")
         return dict(result.get("nav") or {})
@@ -509,8 +512,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result = await gateway.rpc("nav", {"op": "maps"}, timeout=4)
         except (ValueError, TimeoutError) as error:
             raise HTTPException(409, str(error) or "读取地图列表超时") from error
-        maps = (result.get("nav") or {}).get("maps")
-        return {"maps": maps if isinstance(maps, list) else []}
+        nav = result.get("nav") or {}
+        maps, default = nav.get("maps"), nav.get("default")
+        return {
+            "maps": maps if isinstance(maps, list) else [],
+            "default": default if isinstance(default, str) else None,
+        }
+
+    @app.get("/api/v1/nav/maps/{name}/preview.png")
+    async def nav_map_preview(request: Request, name: str) -> Response:
+        """A saved map's thumbnail (the home's floor plan): logged-in only, never cached."""
+        await identity(request)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+            raise HTTPException(404, "没有这张地图")
+        try:
+            result = await gateway.rpc("nav", {"op": "preview", "map": name}, timeout=6)
+            png = base64.b64decode(str((result.get("nav") or {}).get("png", "")), validate=True)
+        except (ValueError, TimeoutError, binascii.Error) as error:
+            raise HTTPException(404, str(error) or "读取缩略图失败") from error
+        if not png.startswith(b"\x89PNG") or len(png) > 1_000_000:
+            raise HTTPException(502, "缩略图格式无效")
+        return Response(png, media_type="image/png")  # the middleware adds no-store
 
     @app.post("/api/v1/speech/say")
     async def say(request: Request, body: SpeechRequest) -> dict[str, Any]:
