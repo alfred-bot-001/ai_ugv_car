@@ -1,4 +1,4 @@
-"""In-container ROS operations for ugv-navctl: pose, set-pose, cancel, navigate.
+"""In-container ROS operations for ugv-navctl: pose, set-pose, cancel, navigate, frontier.
 
 Prints one JSON object. `navigate` plans first and only sends a NavigateToPose goal if
 planning succeeds; it never arms motion (the host writes pi-agent's arm file).
@@ -17,13 +17,16 @@ import rclpy
 from action_msgs.srv import CancelGoal
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
+from nav_msgs.msg import OccupancyGrid
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener
 
 from .board_client import BoardClient, BoardError
 from .bridge_node import SOCKET
+from .frontiers import Grid, candidates, explored_m2
 from .route import Pose, goal_errors, quaternion_to_yaw, within_tolerance, yaw_to_quaternion
 
 SUCCEEDED = 4
@@ -94,6 +97,45 @@ class Operator:
         publisher.publish(message)
         self.spin(3.0)
         return self.pose()
+
+    def latest_map(self, timeout: float = 6.0) -> Any:
+        """The map SLAM or map_server last published (latched)."""
+        received: list[Any] = []
+        qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self.node.create_subscription(OccupancyGrid, "map", received.append, qos)
+        end = time.monotonic() + timeout
+        while not received and time.monotonic() < end:
+            rclpy.spin_once(self.node, timeout_sec=0.05)
+        if not received:
+            raise TimeoutError("no map received")
+        return received[-1]
+
+    def frontier(self, avoid: list[tuple[float, float]]) -> dict[str, Any]:
+        """Exploration targets on the current map, nearest reachable first."""
+        message = self.latest_map()
+        info = message.info
+        if abs(info.origin.orientation.z) > 1e-6:
+            raise ValueError("rotated map origin is not supported")
+        grid = Grid(
+            info.width,
+            info.height,
+            info.resolution,
+            info.origin.position.x,
+            info.origin.position.y,
+            list(message.data),
+        )
+        pose = self.pose()
+        targets = candidates(grid, (pose.x, pose.y), avoid=avoid)
+        return {
+            "ok": True,
+            "pose": asdict(pose),
+            "explored_m2": round(explored_m2(grid), 1),
+            "candidates": [t.to_json() for t in targets],
+        }
 
     def cancel(self) -> dict[str, list[str]]:
         """Best effort: pi-agent's arm file and watchdog, not this call, guarantee a stop."""
@@ -207,6 +249,8 @@ def main() -> None:
         command.add_argument("y", type=float)
         command.add_argument("yaw", type=float)
     sub.choices["navigate"].add_argument("--timeout", type=float, default=110.0)
+    frontier = sub.add_parser("frontier")
+    frontier.add_argument("--avoid", action="append", default=[], help="X,Y of a failed target")
     args = parser.parse_args()
     rclpy.init()
     operator = Operator()
@@ -215,6 +259,9 @@ def main() -> None:
             output: dict[str, Any] = asdict(operator.pose())
         elif args.op == "cancel":
             output = dict(operator.cancel())
+        elif args.op == "frontier":
+            avoid = [(float(a), float(b)) for a, _, b in (v.partition(",") for v in args.avoid)]
+            output = operator.frontier(avoid)
         elif args.op == "set-pose":
             output = asdict(operator.set_pose(Pose(args.x, args.y, args.yaw)))
         else:

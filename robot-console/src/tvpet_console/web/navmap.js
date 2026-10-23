@@ -6,8 +6,8 @@ const NAV_PALETTE=[[245,247,244],[32,52,45],[205,211,208]];
 const NAV_MIN_SCALE=8,NAV_MAX_SCALE=600;
 // Nav2 cruises at up to 0.10 m/s (bridge MAX_LINEAR 0.12); real runs average lower.
 const NAV_AVERAGE_SPEED=0.08;
-const NAV_OP_TEXT={mapping:'开始建图',save:'保存地图',localize:'加载地图定位',pose:'设置当前位置',goal:'导航去目标点'};
-const NAV_OP_RUNNING={mapping:'正在切换到建图模式',save:'正在保存地图',localize:'正在加载地图',pose:'正在设置位置',goal:'正在导航去目标点'};
+const NAV_OP_TEXT={mapping:'开始建图',save:'保存地图',localize:'加载地图定位',pose:'设置当前位置',goal:'导航去目标点',explore:'自动探索'};
+const NAV_OP_RUNNING={mapping:'正在切换到建图模式',save:'正在保存地图',localize:'正在加载地图',pose:'正在设置位置',goal:'正在导航去目标点',explore:'正在自动探索'};
 
 function parseNavPacket(buffer){
   const bytes=new Uint8Array(buffer);
@@ -171,7 +171,8 @@ function jobText(job,now){
   const detail=job.detail&&job.detail.map?' '+job.detail.map:'';
   if(job.state==='running'){
     const seconds=Number.isFinite(now)&&Number.isFinite(job.started)?Math.max(0,Math.round(now-job.started)):null;
-    return (NAV_OP_RUNNING[job.op]||job.op)+detail+'…'+(seconds!=null?'（'+seconds+' 秒）':'');
+    const r=job.result||{},legs=job.op==='explore'&&Number.isFinite(r.legs)?'第 '+(r.legs+1)+' 段'+(Number.isFinite(r.explored_m2)?' · 已探索 '+r.explored_m2+' m²':'')+' · ':'';
+    return (NAV_OP_RUNNING[job.op]||job.op)+detail+'…'+(seconds!=null?'（'+legs+formatDuration(seconds)+'）':'');
   }
   const result=job.message||{ok:'完成',failed:'失败',cancelled:'已取消'}[job.state]||job.state;
   const age=Number.isFinite(now)&&Number.isFinite(job.finished)?'（'+formatAge(now-job.finished)+'）':'';
@@ -239,4 +240,15 @@ function logText(text){
   const value=String(text||'');
   for(const [pattern,chinese] of LOG_TEXT)if(pattern.test(value))return chinese;
   return value;
+}
+
+function formatDuration(seconds){return seconds<120?seconds+' 秒':Math.floor(seconds/60)+' 分 '+(seconds%60)+' 秒';}
+
+// Exploration is allowed while mapping, with a live pose and nothing else running.
+function exploreBlocker(s){
+  const ready=navReadyText(s);if(ready)return ready;
+  if(s.navd.mode!=='mapping')return '自动探索只能在建图时进行';
+  if(!s.hasMap)return '还没有地图';
+  if(!s.poseFresh)return '还没有老三的实时位置';
+  return '';
 }

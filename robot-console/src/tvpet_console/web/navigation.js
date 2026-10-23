@@ -99,7 +99,11 @@ function drawTarget(p,color){
   context.beginPath();context.moveTo(sx,sy);context.lineTo(ex,ey);context.lineWidth=3;context.stroke();
   context.beginPath();context.moveTo(ex,ey);context.lineTo(ex-head*Math.cos(p.yaw-spread),ey+head*Math.sin(p.yaw-spread));context.lineTo(ex-head*Math.cos(p.yaw+spread),ey+head*Math.sin(p.yaw+spread));context.closePath();context.fill();
 }
-function activeGoal(){const job=nav.agent?.navd?.job;return job&&job.op==='goal'&&job.state==='running'&&job.detail&&Number.isFinite(job.detail.x)?job.detail:null;}
+function activeGoal(){
+  const job=nav.agent?.navd?.job;if(!job||job.state!=='running')return null;
+  const target=job.op==='goal'?job.detail:job.op==='explore'?job.result?.target:null;
+  return target&&Number.isFinite(target.x)?target:null;
+}
 // Without a chosen heading: a goal faces away from the car, a pose keeps the current one.
 function fallbackYaw(x,y,kind){
   const pose=nav.pose;if(!pose)return 0;
@@ -194,7 +198,7 @@ function renderFacts(){
   else if(state?.mode==='localization'&&!(poseAge<POSE_STALE_S)){banner.className='notice';banner.textContent='还不知道老三在这张图上的位置：在地图上右键（手机长按）老三所在的地方，选「把老三的位置设在这里」，再点一下车头朝向。';}
   else if(fault){banner.className='notice';const age=formatAge(ageOf(agent.fault.at));banner.textContent=fault+(age==='—'?'':'（'+age+'）')+'。下次出发时自动解除。';}
   else if(stale){banner.className='notice';banner.textContent='位姿数据中断，地图上显示的是最后已知位置。';}
-  else if(activeGoal()){banner.className='notice good';banner.textContent='老三正在自主导航去目标点（蓝色箭头）· 随时可点「取消导航」或「紧急停止」。';}
+  else if(activeGoal()){banner.className='notice good';banner.textContent=(nav.agent?.navd?.job?.op==='explore'?'老三正在自动探索建图，蓝色箭头是这一段的目标':'老三正在自主导航去目标点（蓝色箭头）')+' · 随时可点「取消导航」或「紧急停止」。';}
   else{banner.className='notice good';banner.textContent=(state?.mode==='mapping'?'建图中':'定位导航中')+' · 地图、激光和位置实时更新。';}
   $('#last-update').textContent=state?'导航数据 '+formatAge(stateAge):'等待数据';
   renderControls();
@@ -212,6 +216,8 @@ function renderControls(){
   const ready=navdUp&&!busy,mapping=running&&navd.mode==='mapping';
   $('#start-mapping').disabled=!ready;
   $('#save-map').disabled=!(ready&&mapping&&nav.map&&agent.relay);
+  const exploring=exploreBlocker(menuState());$('#explore').disabled=!!exploring;
+  $('#explore-hint').textContent=busy&&job.op==='explore'?'自动探索中，点「取消导航」可随时停下':exploring&&mapping?exploring:'';
   $('#localize').disabled=!(ready&&$('#map-select').value);
   const menu=menuState();
   if(tool==='heading'&&poseBlocker(menu))setTool('view');
@@ -336,6 +342,11 @@ $('#start-mapping').onclick=()=>guarded($('#start-mapping'),async()=>{
     text:(again?'当前正在建的地图如果还没保存，会被清空。':'导航容器会重启进入建图模式，当前没保存的地图会丢失；已保存的地图不受影响。')+'\n老三不会自己动。启动大约 30 秒，之后用圆盘遥控它把房间走一遍，或在地图上点「去这里」。'});
   if(!ok)return;
   await navCommand({op:'mapping'});resetMap();toast('正在切换到建图模式，大约 30 秒后出现地图');
+});
+$('#explore').onclick=()=>guarded($('#explore'),async()=>{
+  const ok=await ask({title:'让老三自动探索建图？',confirm:'开始探索',text:'老三会自己去还没探索过的地方，一段一段把地图补全：最多 30 段、20 分钟，每段都自己规划路线，遇到障碍会绕开或停下。\n整个过程请留在附近，确认地上没有人、宠物和容易碰倒的东西；随时可以点「取消导航」或「紧急停止」。探索结束后记得「保存地图」。'});
+  if(!ok)return;
+  await navCommand({op:'explore'});toast('老三开始自动探索');
 });
 $('#save-map').onclick=()=>guarded($('#save-map'),async()=>{
   overwriteName='';

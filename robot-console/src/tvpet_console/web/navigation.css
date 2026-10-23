@@ -84,3 +84,5 @@
 .dialog-actions button{min-width:96px}
 @media(max-width:1200px){.nav-grid{grid-template-columns:1fr}.map-stage{height:clamp(380px,62vh,760px)}}
 @media(max-width:760px){.map-stage{margin:0 16px;height:60vh;min-height:320px}.map-legend{display:none}.nav-facts{grid-template-columns:repeat(2,minmax(0,1fr));padding:14px 16px 16px}.layer-toggles{padding:12px 16px 0;gap:14px}.log-list{margin:0 16px 16px}.log-empty{margin:0 16px 16px}.log{grid-template-columns:auto minmax(0,1fr)}.log b{grid-column:2}.log span{grid-column:1/-1}.navigation-page .header-actions{flex-wrap:wrap}.map-actions{padding:12px 16px 0}.control-block{padding:14px 16px 0}.control-block:last-child{padding-bottom:16px}.job-line{margin:0 16px}}
+.explore-hint{color:var(--muted)!important}
+.explore-hint:empty{display:none}
