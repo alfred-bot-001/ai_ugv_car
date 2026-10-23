@@ -449,10 +449,11 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **回滚**：Mini 装回 `releases/0.12.0-ai_ugv_car-f1e890a/` 的主控台 wheel（0.12.0）并 `launchctl bootout/bootstrap`。
 - **部署（2026-10-23 11:12，main `0790c3b`，PR #12 合并后从主干顶端构建，校验输出 ok）**：部署前核对 Mini 线上为主控台 0.12.0 / Pi 代理 0.8.1，等于合并前主干，没有别的分支在线上。Mini 装 `releases/0.12.1-ai_ugv_car-0790c3b/`（主控台 0.12.1 wheel、`uv.lock`；wheel SHA-256 `84a760ca…`），备份 `backups/20261023-pre-0.12.1/`（`tvpet_console/`、`console.sqlite3`）。`launchctl bootout/bootstrap` 一次成功。Pi 无改动、未重启。核验：`.venv` 内 0.12.1；Mini 本机与公网 `/health` 均 `agent_online: true, mode: control`；公网 `keypad.js`、`app.js` 与源码 SHA-256 一致，`keypad.js` 已含 `KeyI`；安装包内 `dashboard.html`、`navigation.html` 与源码一致；服务日志无报错，Pi 的音频/前置相机 WebSocket 已重连。
 
-## 2026-10-23 总览页右栏精简：只留速度上限，语音交互上移（Mini 0.12.2，待合并）
+## 2026-10-23 总览页右栏精简：只留速度上限，语音交互上移（Mini 0.12.2，main `ca0b0c8`）
 
 用户反馈：总览页右栏的「底盘移动」「摄像头云台」两张卡片已没有重要信息（圆盘和快捷键提示都在视频画面里），只保留速度设置；把「语音交互」从左栏移到右栏上方。
 
 - **改动**：`web/dashboard.html` 右栏改为三张卡片：「底盘速度」（标题旁保留 `#gate-wheels` 验收/离线徽章，一行 W/A/S/D、I/J/K/L 与「拖回中间才停」提示，`#speed` 滑杆不变）→「语音交互」（整段原样移入，`#voice` 锚点和侧栏链接不变）→「现场控制保护」（文案里的「按『停止』」改为「按『紧急停止』」）。删掉的元素：两张卡的操作说明、`#gate-gimbal`、`#feedback-wheels/gimbal` 硬件反馈行、「停止移动」「停止云台」按钮。`web/app.js` 的 `render()` 对 `#gate-*`、`#feedback-*` 改为存在才写，`[data-stop]` 处理器在没有按钮时自然为空；控制协议、租约、键盘和圆盘逻辑未动。`web/style.css`：≤1200px 时右栏两列排为「底盘速度｜现场控制保护」一行、语音交互整行，≤760px 仍按 视频 → 底盘速度 → 语音 → 诊断 → 保护 的顺序；地图页不受影响。
 - **验证**：门禁 364 项通过、覆盖率 83%，ruff / format / mypy 干净；`node` 跑 5 个 `.mjs` 前端测试通过（`test_keypad_frontend.mjs` 仍断言总览页含 I/J/K/L `<kbd>` 提示）。本机 `CONSOLE_DEV_HTTP=1` 预览（设备离线）在 1720px 与 1000px 宽核对布局，控制台无报错。
 - **回滚**：Mini 装回 `releases/0.12.1-ai_ugv_car-0790c3b/` 的主控台 wheel（0.12.1）并 `launchctl bootout/bootstrap`。
+- **部署（2026-10-23 11:55，main `ca0b0c8`，PR #14 合并后从主干顶端构建，校验输出 ok）**：部署前核对 Mini 线上为主控台 0.12.1 / Pi 代理 0.8.1，安装包内 `dashboard.html`、`app.js`、`style.css` 指纹与 `0790c3b` 源码一致，Mini 本机 clone 停在 `0619f9f`、无 worktree，没有别的分支在线上。Mini 装 `releases/0.12.2-ai_ugv_car-ca0b0c8/`（主控台 0.12.2 wheel、`uv.lock`；wheel SHA-256 `7a855385…`），备份 `backups/20261023-pre-0.12.2/`（`tvpet_console/`、`console.sqlite3`）。`launchctl bootout/bootstrap` 一次成功。Pi 无改动、未重启。核验：`.venv` 内 0.12.2；Mini 本机与公网 `/health` 均 `agent_online: true, mode: control`；公网 `app.js`、`style.css` 与安装包内 `dashboard.html` 的 SHA-256 均等于主干源码，安装包页面已无 `gate-gimbal`、`#voice` 位于右栏；重启后日志无报错，Pi 的 video/audio/nav/front 四条 WebSocket 已重连。真机页面效果待用户在浏览器刷新后确认。
