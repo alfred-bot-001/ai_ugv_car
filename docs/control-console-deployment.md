@@ -449,22 +449,36 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **回滚**：Mini 装回 `releases/0.12.0-ai_ugv_car-f1e890a/` 的主控台 wheel（0.12.0）并 `launchctl bootout/bootstrap`。
 - **部署（2026-10-23 11:12，main `0790c3b`，PR #12 合并后从主干顶端构建，校验输出 ok）**：部署前核对 Mini 线上为主控台 0.12.0 / Pi 代理 0.8.1，等于合并前主干，没有别的分支在线上。Mini 装 `releases/0.12.1-ai_ugv_car-0790c3b/`（主控台 0.12.1 wheel、`uv.lock`；wheel SHA-256 `84a760ca…`），备份 `backups/20261023-pre-0.12.1/`（`tvpet_console/`、`console.sqlite3`）。`launchctl bootout/bootstrap` 一次成功。Pi 无改动、未重启。核验：`.venv` 内 0.12.1；Mini 本机与公网 `/health` 均 `agent_online: true, mode: control`；公网 `keypad.js`、`app.js` 与源码 SHA-256 一致，`keypad.js` 已含 `KeyI`；安装包内 `dashboard.html`、`navigation.html` 与源码一致；服务日志无报错，Pi 的音频/前置相机 WebSocket 已重连。
 
-## 2026-10-23 总览页右栏精简：只留速度上限，语音交互上移（Mini 0.12.2，待合并）
+## 2026-10-23 总览页右栏精简：只留速度上限，语音交互上移（Mini 0.12.2，main `ca0b0c8`）
 
 用户反馈：总览页右栏的「底盘移动」「摄像头云台」两张卡片已没有重要信息（圆盘和快捷键提示都在视频画面里），只保留速度设置；把「语音交互」从左栏移到右栏上方。
 
 - **改动**：`web/dashboard.html` 右栏改为三张卡片：「底盘速度」（标题旁保留 `#gate-wheels` 验收/离线徽章，一行 W/A/S/D、I/J/K/L 与「拖回中间才停」提示，`#speed` 滑杆不变）→「语音交互」（整段原样移入，`#voice` 锚点和侧栏链接不变）→「现场控制保护」（文案里的「按『停止』」改为「按『紧急停止』」）。删掉的元素：两张卡的操作说明、`#gate-gimbal`、`#feedback-wheels/gimbal` 硬件反馈行、「停止移动」「停止云台」按钮。`web/app.js` 的 `render()` 对 `#gate-*`、`#feedback-*` 改为存在才写，`[data-stop]` 处理器在没有按钮时自然为空；控制协议、租约、键盘和圆盘逻辑未动。`web/style.css`：≤1200px 时右栏两列排为「底盘速度｜现场控制保护」一行、语音交互整行，≤760px 仍按 视频 → 底盘速度 → 语音 → 诊断 → 保护 的顺序；地图页不受影响。
 - **验证**：门禁 364 项通过、覆盖率 83%，ruff / format / mypy 干净；`node` 跑 5 个 `.mjs` 前端测试通过（`test_keypad_frontend.mjs` 仍断言总览页含 I/J/K/L `<kbd>` 提示）。本机 `CONSOLE_DEV_HTTP=1` 预览（设备离线）在 1720px 与 1000px 宽核对布局，控制台无报错。
 - **回滚**：Mini 装回 `releases/0.12.1-ai_ugv_car-0790c3b/` 的主控台 wheel（0.12.1）并 `launchctl bootout/bootstrap`。
+- **部署（2026-10-23 11:55，main `ca0b0c8`，PR #14 合并后从主干顶端构建，校验输出 ok）**：部署前核对 Mini 线上为主控台 0.12.1 / Pi 代理 0.8.1，安装包内 `dashboard.html`、`app.js`、`style.css` 指纹与 `0790c3b` 源码一致，Mini 本机 clone 停在 `0619f9f`、无 worktree，没有别的分支在线上。Mini 装 `releases/0.12.2-ai_ugv_car-ca0b0c8/`（主控台 0.12.2 wheel、`uv.lock`；wheel SHA-256 `7a855385…`），备份 `backups/20261023-pre-0.12.2/`（`tvpet_console/`、`console.sqlite3`）。`launchctl bootout/bootstrap` 一次成功。Pi 无改动、未重启。核验：`.venv` 内 0.12.2；Mini 本机与公网 `/health` 均 `agent_online: true, mode: control`；公网 `app.js`、`style.css` 与安装包内 `dashboard.html` 的 SHA-256 均等于主干源码，安装包页面已无 `gate-gimbal`、`#voice` 位于右栏；重启后日志无报错，Pi 的 video/audio/nav/front 四条 WebSocket 已重连。真机页面效果待用户在浏览器刷新后确认。
+
+## 2026-10-23 云台限位放宽到 ±170° / -30°～90° + 零位校准（Pi 0.8.2，main `66b4b1d`）
+
+用户反馈：官方云台几乎能转 360°，现在只有 90°，而且从正前方只能向右转。
+
+- **原因**：Pi 代理 `hardware.py` 的 `PAN_LIMIT = 45`、`TILT_MIN/MAX = -15/45` 是 2026-10-02 验收时的保守取值，网页圆盘的目标角度被夹在 ±45°，反馈超出 ±47° 还会被健康检查锁定。官方固件 ugv_base_ros `gimbal_module.h` 对 T133 的限制是 X ±180°、Y -30°～90°。只能向右转是因为水平舵机的零位（位置 2047）比相机正前方偏右约 45°：验收证据里云台静止读数一直在 -30°～-33°，相机朝前时读数已贴近 -45° 左边界。
+- **改动（用户 2026-10-23 批准）**：`PAN_LIMIT = 170`、`TILT_MIN, TILT_MAX = -30, 90`，注释写明日期、理由和固件上限；健康检查 2° 容差不变。`scripts/verify_motion.py` 的云台测试范围同步放宽。新增 `tvpet_pi/gimbal_center.py` 与命令 `tvpet-gimbal-center`：停轮、`T4 cmd 2` 开云台反馈、读一遍反馈、发 `{"T":502,"id":2}`（固件 `setMiddlePos` → `st.CalibrationOfs`，偏移写进舵机 EEPROM，断电保留）、再读反馈，`|pan| ≤ 2°` 即校准成功，输出 JSON。串口独占，必须先停代理。主控台和 ugv-nav 不变。
+- **校零步骤（用户在场）**：网页圆盘把相机转到正对车头 → `sudo systemctl stop ai-tv-pet-agent` → `/home/ws/deploy/ai-tv-pet-agent/.venv/bin/tvpet-gimbal-center --camera-facing-front` → 看输出 `centered: true` → `sudo systemctl start ai-tv-pet-agent`。俯仰同理加 `--axis tilt`（本次未要求）。
+- **部署前确认**：云台相机 USB 线在 -170° 和 +170° 两端都有余量（10 月 17 日相机反复掉线疑似线被扯）。线不够就把 `PAN_LIMIT` 收到线允许的角度再部署。
+- **验证**：新增单元测试覆盖限位夹取（169→170、-169→-170、89→90、-29→-30）、反馈越界判定、校准命令与舵机 ID、模拟串口下的命令顺序（零速 → T4 → T502）和无反馈拒绝。实车两端转动、校零后 0° 对正车头待用户在场实测。
+- **回滚**：Pi 装回 `releases/0.8.1/` 两个环境后重启服务；舵机零位如要还原，把相机转回原位再跑一次 `tvpet-gimbal-center`（没有「撤销」命令，EEPROM 只保存最后一次）。
+- **部署（2026-10-23 11:57，main `66b4b1d`，PR #17 合并后从主干顶端构建，校验输出 ok；两次变基只在本文件末尾与 PR #14/#16 的追加段落冲突，双方都保留）**：部署前核对 Mini 线上为主控台 0.12.2 / Pi 代理 0.8.1，等于合并前主干 `cc5f217`，没有别的分支在线上；用户已确认云台相机线在 ±170° 两端有余量。Pi 备份 `backups/20261023-pre-0.8.2/`（`venv-tvpet_pi/`、`pose-venv-tvpet_pi/`、`agent.json`），wheel 存 `releases/0.8.2/`（SHA-256 `effc3050…`，与本机构建一致），停服务后装进 `.venv` 和 `pose-venv`，重启一次成功、NRestarts=0。核验：两个环境均 0.8.2，`.venv/bin/tvpet-gimbal-center` 存在，安装包内 `PAN_LIMIT = 170.0`；代理 5 条对外连接；公网 `/health` `agent_online: true, mode: control`（即底盘、云台均 ready）。全程未发运动指令。Mini 的协议依赖包仍是 0.8.1（主控台不引用改动的模块，随下次 Mini 发布一起更新）。开着的 PR #15（底盘速度上限，Pi 0.9.0）需在本次之上变基。
+- **待办（用户在场）**：按上文步骤校零，再用圆盘左右各转到头，看线缆和画面；俯仰上下到头各一次。
 
 ## 2026-10-23 摇杆速度上限放到官方满速 1.3 m/s（Mini 0.13.0 / Pi 0.9.0）
 
 用户反馈：现在的速度远没到官方小车的最快速度，要求按官方速度调整。核对微雪官方 `ugv_rpi`（本机 `~/workspace-agent/projects/irobot/ugv_rpi/`）：`config.yaml` 对 `main_type: 2`（UGV Rover）写 `max_speed: 1.3`、`slow_speed: 0.2`，官方网页 `templates/control.js` 的慢/中/快三档系数 0.3 / 0.66 / 1.0 对应约 0.39 / 0.86 / 1.3 m/s，默认慢档；官方 wiki 规格表同样是最高 1.3 m/s。我们原来的上限是：网页滑杆 0.07～0.18、Pi `Stick.speed` 校验 ≤ 0.18、Pi 失控急停 `RUNAWAY_SPEED` 0.3 m/s，三道都卡在官方的七分之一以下。
 
 - **用户批准的数值（2026-10-23）**：摇杆上限 1.3 m/s（官方额定）；失控急停绝对阈值 1.6 m/s（额定值加上低速实测约 25% 的闭环超调：0.10 指令实测 0.127）；导航桥保留 0.3 m/s 的失控阈值。下限 0.07、默认 0.10 不变，滑杆设置仍记在浏览器 `wheels-speed`。
-- **Pi 代理 0.9.0**：`protocol.JOYSTICK_SPEED_MAX` 0.18 → 1.3；`hardware.RUNAWAY_SPEED` 0.3 → 1.6；`Board.move()` 新增 `runaway` 参数（上限封顶 `RUNAWAY_SPEED`），记在 `Board.runaway`，看门狗急停与 `health_error()` 都按它判断；`nav.py` 新增 `NAV_RUNAWAY_SPEED = 0.3` 并在每条导航命令里传给 `move()`，所以自主导航（`PWM_LIMIT` 仍 0.18）的失控保护没有放松。导航结束后阈值保持 0.3，下一条摇杆命令才回到 1.6。各常量注释都写了日期和理由。
-- **Mini 0.13.0**：在 0.12.2（右栏精简，另一会话）之上变基。「底盘速度」卡的滑杆 `max` 0.18 → 1.3（步进 0.01），`app.js` / `navigation.js` 的 clamp 同步改为 1.3，「最快」标签在 1.3 显示；滑杆下加一行小字「m/s，上限 1.3 为官方满速；0.4 以上请在开阔场地」（`.speed` 改为可换行）。其余停止机制（松手不回弹但圆点归中即停、失焦/切后台/断线/遥测过期 0.6 s/急停、固件 T136=300 ms）不变。
+- **Pi 代理 0.9.0**：在 0.8.2（云台限位，另一会话）之上。`protocol.JOYSTICK_SPEED_MAX` 0.18 → 1.3；`hardware.RUNAWAY_SPEED` 0.3 → 1.6；`Board.move()` 新增 `runaway` 参数（上限封顶 `RUNAWAY_SPEED`），记在 `Board.runaway`，看门狗急停与 `health_error()` 都按它判断；`nav.py` 新增 `NAV_RUNAWAY_SPEED = 0.3` 并在每条导航命令里传给 `move()`，所以自主导航（`PWM_LIMIT` 仍 0.18）的失控保护没有放松。导航结束后阈值保持 0.3，下一条摇杆命令才回到 1.6。各常量注释都写了日期和理由。
+- **Mini 0.13.0**：在 0.12.2（右栏精简，另一会话）之上。「底盘速度」卡的滑杆 `max` 0.18 → 1.3（步进 0.01），`app.js` / `navigation.js` 的 clamp 同步改为 1.3，「最快」标签在 1.3 显示；滑杆下加一行小字「m/s，上限 1.3 为官方满速；0.4 以上请在开阔场地」（`.speed` 改为可换行）。其余停止机制（松手不回弹但圆点归中即停、失焦/切后台/断线/遥测过期 0.6 s/急停、固件 T136=300 ms）不变。
 - **测试**：`test_safety` 的速度带改为 1.3 合法、1.31 非法；`test_nav` 新增两项：各模式上限与急停阈值的顺序（0.18 < 0.3，1.3 < 1.6），以及用读线程喂遥测验证导航命令后 0.31 m/s 触发看门狗急停并写零速、摇杆命令后 1.3 m/s 不触发。前端 `test_speed_frontend.mjs` 改为 1.3 封顶。
-- **验证**：本机完整门禁通过（ruff、format、mypy、365 项测试、覆盖率 83%）；`node` 跑 5 个 `.mjs` 前端测试通过。`uv.lock` 只更新两个包的版本号。CI 只挂主干既有的 `test_sso.py` 两项偶发失败。实车尚未试驾。
+- **验证**：本机完整门禁通过（ruff、format、mypy、365 项以上测试、覆盖率 83%）；`node` 跑 5 个 `.mjs` 前端测试通过。`uv.lock` 只更新两个包的版本号。CI 只挂主干既有的 `test_sso.py` 两项偶发失败。实车尚未试驾。
 - **安全提醒**：1.3 m/s 在室内很快，首次试驾必须用户在场、场地清空，建议从 0.4 左右逐级往上；急停锁定后要在页面「解除急停」。与 Nav2 的 0.10 m/s 巡航速度无关，导航速度本次未动。
-- **回滚**：Pi 装回 `releases/0.8.1/`（两个环境），Mini 装回 `releases/0.12.2-…/` 或 `releases/0.12.1-ai_ugv_car-0790c3b/` 的主控台 wheel；旧 Pi 会拒绝新页面 0.18 以上的速度（校验错误、车不动），所以回滚时先回 Mini 再回 Pi，或两边一起回。
+- **回滚**：Pi 装回 `releases/0.8.2/`（两个环境），Mini 装回 `releases/0.12.2-ai_ugv_car-ca0b0c8/` 的主控台 wheel；旧 Pi 会拒绝新页面 0.18 以上的速度（校验错误、车不动），所以回滚时先回 Mini 再回 Pi，或两边一起回。

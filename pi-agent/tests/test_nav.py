@@ -374,12 +374,12 @@ def test_navigation_keeps_the_tight_runaway_bound_and_the_joystick_restores_it(
 
 def test_board_health_allows_two_degrees_of_servo_overshoot(rig: tuple[NavBridge, Mock]) -> None:
     board = rig[0].board
-    board.telemetry = {"L": 0, "R": 0, "v": 12.0, "pan": 46.9, "tilt": -16.9}
+    board.telemetry = {"L": 0, "R": 0, "v": 12.0, "pan": 171.9, "tilt": -31.9}
     board.received_at = time.monotonic()
     assert board.health_error() == ""
-    board.telemetry["pan"] = 47.1
+    board.telemetry["pan"] = 172.1
     assert "云台" in board.health_error()
-    board.telemetry.update(pan=0, tilt=47.1)
+    board.telemetry.update(pan=0, tilt=92.1)
     assert "云台" in board.health_error()
 
 
