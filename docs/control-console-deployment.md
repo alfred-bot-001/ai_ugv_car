@@ -426,3 +426,6 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 ## 2026-10-23 硬件状态卡片改为底部状态条（Mini 0.11.1）
 
 - **改动**：设备控制台顶部六张硬件状态大卡片（摄像头、麦克风、舵机/电机、CPU 温度、内存、电池电压）改成一行小字状态条，放在主内容区之后、页脚之前；元素 id 不变，`app.js` 不改。1500 px 以下隐藏补充说明，手机宽度隐藏图标并换行。只改 `dashboard.html` 与 `style.css`，主控台 0.11.0 → 0.11.1，Pi 代理与 ugv-nav 不变。
+- **验证**：本机完整门禁通过（ruff、format、mypy、364 项测试、覆盖率 83.16%）。CI 上 `pull_request` 事件那次 `verify` 失败的三项（`test_sso.py` 两项、`pi-agent/tests/test_nav.py` 套接字权限一项）与主干既有失败完全相同，与本次无关；`push` 事件那次通过。本机渲染在 1900 / 1250 / 375 宽度核对状态条位置与换行。
+- **部署（2026-10-23 10:35，main `685d339`，PR #7 合并后从主干顶端构建，校验输出 ok）**：部署前核对 Mini 线上为主控台 0.11.0 / Pi 代理 0.8.1，等于合并前主干。Mini 装 `releases/0.11.1-ai_ugv_car-685d339/`（主控台 0.11.1 wheel、`uv.lock`；wheel SHA-256 `7892e1a4…`），备份 `backups/20261023-pre-0.11.1/`（`tvpet_console/`、`console.sqlite3`）。`launchctl bootout` 后 `bootstrap` 第一次报错 5，第二次成功。Pi 无改动、未重启。核验：`.venv` 内 0.11.1；本机与公网 `/health` 均 `agent_online: true, mode: control`；公网 `style.css`、`app.js`、`keypad.js` 与源码 SHA-256 一致，`style.css` 已含 `.status-strip`、不含 `.status-card`；Mini 安装包内 `dashboard.html` 与源码一致；服务日志无报错。
+- **回滚**：Mini 装回 `releases/0.11.0-ai_ugv_car-2a0303c/` 的主控台 wheel（或 `backups/20261023-pre-0.11.1/tvpet_console/`）后 `launchctl bootout/bootstrap`。
