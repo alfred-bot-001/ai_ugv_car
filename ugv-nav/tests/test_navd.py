@@ -351,3 +351,76 @@ def test_a_bringup_stuck_twice_fails_clearly(tmp_path: Path) -> None:
     navd.handle({"op": "mapping"})  # mapping only needs the navigation manager
     deferred.run_all()
     assert navd.job.state == "ok" and navd.job.message == "已进入建图模式"
+
+
+def mapping_env(navd: Navd) -> None:
+    (navd.ctl.settings.compose_dir / ".env").write_text(
+        "UGV_NAV_LAUNCH=n3_navigation\nUGV_NAV_ARGS=mapping:=true localization:=false\n"
+    )
+
+
+def frontier(*targets: tuple[float, float], area: float = 4.2) -> dict[str, Any]:
+    found = [{"x": x, "y": y, "yaw": 0.5, "frontier_m": 0.6, "travel_m": 1.0} for x, y in targets]
+    return {"ok": True, "explored_m2": area, "candidates": found}
+
+
+def test_explore_drives_frontier_to_frontier_until_none_is_left(tmp_path: Path) -> None:
+    replies = {
+        "frontier": [frontier((1, 0)), frontier((2, 1), area=6.0), frontier(area=8.5)],
+        "navigate": [{"ok": True}, {"ok": True}],
+    }
+    navd, run, deferred = make_navd(tmp_path, replies)
+    mapping_env(navd)
+    navd.handle({"op": "explore"})
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "ok"
+    assert navd.job.message.startswith("探索完成") and "8.5 m²" in navd.job.message
+    assert navd.job.result == {"legs": 2, "reached": 2, "explored_m2": 8.5, "target": None}
+    assert run.armed_during_navigate == [True, True]
+    assert json.loads((navd.ctl.settings.board / "arm.json").read_text()) == {"enabled": False}
+
+
+def test_explore_avoids_failed_targets_and_stops_on_a_safety_stop(tmp_path: Path) -> None:
+    replies = {
+        "frontier": [frontier((1, 0)), frontier((-1.5, 2))],
+        "navigate": [
+            {"ok": False, "error_m": 0.4},
+            {"ok": False, "fault": {"reason": "stall_body"}},
+        ],
+    }
+    navd, run, deferred = make_navd(tmp_path, replies)
+    mapping_env(navd)
+    navd.handle({"op": "explore"})
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "failed"
+    assert navd.job.message == "探索中止：已安全停车（车轮在转但车没动）"
+    frontier_calls = [c for c in run.calls if "frontier" in c]
+    assert "--avoid=1.000,0.000" in frontier_calls[1]  # the failed target is not retried
+
+
+def test_explore_gives_up_after_three_misses_and_needs_mapping(tmp_path: Path) -> None:
+    miss = {"ok": False, "error_m": 0.5}
+    replies = {
+        "frontier": [frontier((1, 0)), frontier((2, 0)), frontier((3, 0))],
+        "navigate": [miss, miss, miss],
+    }
+    navd, _, deferred = make_navd(tmp_path, replies)
+    localized(navd)
+    navd.handle({"op": "explore"})
+    deferred.run_all()
+    assert navd.job is not None and "只能在建图时进行" in navd.job.message
+    mapping_env(navd)
+    navd.handle({"op": "explore"})
+    deferred.run_all()
+    assert navd.job.state == "failed" and navd.job.message == "连续 3 段没到达，探索中止"
+    assert navd.job.result["legs"] == 3 and navd.job.result["reached"] == 0
+
+
+def test_explore_stops_when_cancelled(tmp_path: Path) -> None:
+    navd, run, deferred = make_navd(tmp_path, {"frontier": [frontier((1, 0))]})
+    mapping_env(navd)
+    navd.handle({"op": "explore"})
+    navd.handle({"op": "stop"})
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "cancelled"
+    assert run.armed_during_navigate == []

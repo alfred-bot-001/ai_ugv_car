@@ -23,6 +23,7 @@ def test_commands_take_exactly_their_fields() -> None:
     goal = NavCommand.model_validate({"op": "goal", "x": 1, "y": -0.5, "yaw": math.pi / 2})
     assert goal.payload() == {"op": "goal", "x": 1.0, "y": -0.5, "yaw": math.pi / 2}
     assert goal.describe() == "导航去目标点 (1.00, -0.50, 90°)"
+    assert NavCommand.model_validate({"op": "explore"}).describe() == "自动探索"
     for bad in (
         {"op": "shell"},
         {"op": "mapping", "map": "x"},
@@ -36,6 +37,7 @@ def test_commands_take_exactly_their_fields() -> None:
         {"op": "goal", "x": 0, "y": 0, "yaw": 7},
         {"op": "stop", "x": 0},
         {"op": "stop", "force": True},
+        {"op": "explore", "x": 1},
     ):
         with pytest.raises(ValidationError):
             NavCommand.model_validate(bad)

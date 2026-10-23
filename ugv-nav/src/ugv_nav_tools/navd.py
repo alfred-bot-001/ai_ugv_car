@@ -34,7 +34,16 @@ from typing import Any
 
 from .board_client import BoardError
 from .map_files import FREE_PIXEL, read_map_yaml, read_pgm
-from .navctl import MAP_NAME, BatteryLow, Cancelled, NavCtl, Settings, map_name
+from .navctl import (
+    BATTERY_LEG_V,
+    BATTERY_START_V,
+    MAP_NAME,
+    BatteryLow,
+    Cancelled,
+    NavCtl,
+    Settings,
+    map_name,
+)
 from .route import Pose, wrap
 
 LOGGER = logging.getLogger("ugv-navd")
@@ -52,7 +61,13 @@ MANAGERS = {"navigation": "导航", "localization": "定位"}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 ACTIVE = re.compile(r"\[lifecycle_manager_(\w+)\]: Managed nodes are active")
 MAX_MAPS = 100
-OPS = ("status", "maps", "mapping", "save", "localize", "pose", "goal", "stop")
+OPS = ("status", "maps", "mapping", "save", "localize", "pose", "goal", "explore", "stop")
+# Exploration (map page "自动探索"): frontier legs, each one ordinary goal with its own
+# bounded arm window and battery gate. It ends when no frontier is left, on a safety
+# stop, on cancel, after three legs in a row fail, or at these caps.
+EXPLORE_MAX_LEGS = 30
+EXPLORE_MAX_S = 20 * 60.0
+EXPLORE_MAX_FAILURES = 3
 FIELDS = {
     "save": {"map"},
     "localize": {"map"},
@@ -73,6 +88,7 @@ OP_TEXT = {
     "localize": "切换到已保存地图定位",
     "pose": "设置当前位置",
     "goal": "导航去目标点",
+    "explore": "自动探索",
 }
 
 
@@ -258,6 +274,7 @@ class Navd:
         self.cancel_event = threading.Event()
         ctl.cancelled = self.cancel_event.is_set
         self.container = ("unknown", -math.inf)
+        self.current: Job | None = None  # the running job, for progress updates
 
     def handle(self, raw: Any) -> dict[str, Any]:
         request = parse_request(raw)
@@ -300,6 +317,7 @@ class Navd:
 
     def run(self, job: Job, request: Request) -> None:
         state, message, result = "failed", "", dict[str, Any]()
+        self.current = job
         try:
             state, message, result = self.execute(request)
         except Cancelled:
@@ -313,11 +331,12 @@ class Navd:
         except Exception as error:  # noqa: BLE001 - a job thread must always finish its job
             LOGGER.exception("job %s crashed", job.id)
             message = f"{type(error).__name__}: {error}"[:300]
-        if self.cancel_event.is_set() and job.op == "goal" and state != "ok":
+        if self.cancel_event.is_set() and job.op in ("goal", "explore") and state != "ok":
             state = "cancelled"
             message = message if message.startswith("已取消") else "已取消，小车已停下"
         with self.lock:
-            job.state, job.message, job.result = state, message, result
+            job.state, job.message = state, message
+            job.result = result or job.result
             job.finished = self.clock()
         LOGGER.info("job %s %s: %s %s", job.id, job.op, state, message)
 
@@ -332,6 +351,8 @@ class Navd:
             retried = self.switch_mode(mapping=False, name=request.map)
             message = f"已加载地图 {request.map}{retried}，请设置老三的位置"
             return "ok", message, {"map": request.map}
+        if request.op == "explore":
+            return self.explore()
         if request.op == "save":
             ctl.save(request.map)
             return "ok", f"地图已保存为 {request.map}", {"map": request.map}
@@ -347,6 +368,60 @@ class Navd:
             return "ok", "已设置当前位置", reached
         summary, message = goal_summary(ctl.goal(pose))
         return ("ok" if summary.get("ok") else "failed"), message, summary
+
+    def progress(self, result: dict[str, Any]) -> None:
+        with self.lock:
+            if self.current is not None:
+                self.current.result = dict(result)
+
+    def explore(self) -> tuple[str, str, dict[str, Any]]:
+        """Drive to frontier after frontier while mapping (see EXPLORE_* above)."""
+        ctl = self.ctl
+        if env_mode((ctl.settings.compose_dir / ".env").read_text())["mode"] != "mapping":
+            raise ValueError("自动探索只能在建图时进行；先点「开始建图」")
+        started = self.monotonic()
+        failures, avoid = 0, list[tuple[float, float]]()
+        summary: dict[str, Any] = {"legs": 0, "reached": 0, "explored_m2": None, "target": None}
+        while True:
+            if self.cancel_event.is_set():
+                return "cancelled", "已取消探索，小车已停下", summary | {"target": None}
+            if summary["legs"] >= EXPLORE_MAX_LEGS:
+                return "ok", f"已走满 {EXPLORE_MAX_LEGS} 段，探索暂停", summary | {"target": None}
+            if self.monotonic() - started > EXPLORE_MAX_S:
+                return "ok", "已到 20 分钟上限，探索暂停", summary | {"target": None}
+            reply = ctl.json_op("frontier", *(f"--avoid={x:.3f},{y:.3f}" for x, y in avoid))
+            summary["explored_m2"] = reply.get("explored_m2")
+            targets = reply.get("candidates") or []
+            if not targets:
+                area = summary["explored_m2"]
+                return (
+                    "ok",
+                    f"探索完成：没有能去的未探索边界了（已探索 {area} m²），记得保存地图",
+                    (summary | {"target": None}),
+                )
+            target = targets[0]
+            summary["target"] = {k: target[k] for k in ("x", "y", "yaw")}
+            self.progress(summary)
+            gate = BATTERY_START_V if summary["legs"] == 0 else BATTERY_LEG_V
+            result = ctl.goal(Pose(target["x"], target["y"], target["yaw"]), battery_gate=gate)
+            summary["legs"] += 1
+            if result.get("ok"):
+                summary["reached"] += 1
+                failures = 0
+            else:
+                fault = result.get("fault")
+                if self.cancel_event.is_set():
+                    return "cancelled", "已取消探索，小车已停下", summary | {"target": None}
+                if isinstance(fault, dict):
+                    reason = str(fault.get("reason", ""))
+                    text = FAULT_TEXT.get(reason, reason)
+                    return "failed", f"探索中止：已安全停车（{text}）", summary | {"target": None}
+                avoid.append((float(target["x"]), float(target["y"])))
+                failures += 1
+                if failures >= EXPLORE_MAX_FAILURES:
+                    message = f"连续 {failures} 段没到达，探索中止"
+                    return "failed", message, summary | {"target": None}
+            self.progress(summary)
 
     def switch_mode(self, *, mapping: bool, name: str | None = None) -> str:
         """Recreate the container and wait for its lifecycle managers; one retry."""

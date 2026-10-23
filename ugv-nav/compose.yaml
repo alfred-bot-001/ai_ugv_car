@@ -1,7 +1,7 @@
 name: ugv-nav
 services:
   ugv-nav:
-    image: ai-ugv-car/ugv-nav:${UGV_NAV_VERSION:-0.5.3}
+    image: ai-ugv-car/ugv-nav:${UGV_NAV_VERSION:-0.5.4}
     build: .
     container_name: ugv-nav
     network_mode: host

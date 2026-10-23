@@ -8,7 +8,7 @@ const source = fs.readFileSync(new URL('../src/tvpet_console/web/navmap.js', imp
 const names = ['parseNavPacket', 'worldToScreen', 'screenToWorld', 'zoomAt', 'mapBounds', 'fitView',
   'recolorMap', 'formatAge', 'areaText', 'healthText', 'faultText', 'modeText', 'logLevelClass', 'scaleBar',
   'arrowPose', 'mapCell', 'goalPlan', 'defaultMapName', 'mapNameValid', 'containerText', 'containerRunning',
-  'navdModeText', 'jobText', 'mapOptionText', 'poseBlocker', 'goalBlocker', 'sameSession', 'nearestWall', 'logText'];
+  'navdModeText', 'jobText', 'mapOptionText', 'poseBlocker', 'goalBlocker', 'sameSession', 'nearestWall', 'logText', 'exploreBlocker', 'formatDuration'];
 const context = {TextDecoder, DataView, Uint8Array, JSON, Math, Number, Date, String, Array};
 vm.runInNewContext(source + '\n' + names.map(n => `this.${n}=${n};`).join(''), context);
 const h = context;
@@ -150,3 +150,12 @@ assert.equal(h.nearestWall(grid5, 5, 5, 1, 2, 2), Infinity);
 assert.equal(h.logText('motion gate: front obstacle and turn space not verified'), '安全门：前方 30 cm 内有障碍，停止前进');
 assert.equal(h.logText('Failed to make progress'), '导航：一段时间没有进展，放弃这个目标');
 assert.equal(h.logText('something else'), 'something else');
+
+// Exploration: progress in the running line, allowed only while mapping.
+assert.equal(h.jobText({op: 'explore', state: 'running', started: 100, result: {legs: 2, explored_m2: 9.5}}, 230), '正在自动探索…（第 3 段 · 已探索 9.5 m² · 2 分 10 秒）');
+assert.equal(h.jobText({op: 'goal', state: 'running', started: 100}, 112), '正在导航去目标点…（12 秒）');
+const mappingState = {...ready, navd: {...navd, mode: 'mapping'}};
+assert.equal(h.exploreBlocker(mappingState), '');
+assert.equal(h.exploreBlocker(ready), '自动探索只能在建图时进行');
+assert.equal(h.exploreBlocker({...mappingState, poseFresh: false}), '还没有老三的实时位置');
+assert.equal(h.formatDuration(59), '59 秒');

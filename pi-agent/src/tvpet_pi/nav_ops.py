@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 NAVD_SOCKET = Path("/home/ws/deploy/ugv-nav/run/ops.sock")
 COORD_LIMIT = 100.0  # m; same bound as ugv-navd
 MAX_REPLY = 262144  # the map list is the largest reply
-NavOp = Literal["status", "maps", "mapping", "save", "localize", "pose", "goal", "stop"]
+NavOp = Literal["status", "maps", "mapping", "save", "localize", "pose", "goal", "explore", "stop"]
 MAP_OPS = ("save", "localize")
 POSE_OPS = ("pose", "goal")
 # What the map page log says when the operator starts something.
@@ -26,6 +26,7 @@ OP_TEXT = {
     "localize": "切换到已保存地图定位",
     "pose": "设置当前位置",
     "goal": "导航去目标点",
+    "explore": "自动探索",
     "stop": "取消导航",
 }
 
