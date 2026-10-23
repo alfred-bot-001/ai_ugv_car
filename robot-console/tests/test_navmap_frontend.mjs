@@ -8,7 +8,7 @@ const source = fs.readFileSync(new URL('../src/tvpet_console/web/navmap.js', imp
 const names = ['parseNavPacket', 'worldToScreen', 'screenToWorld', 'zoomAt', 'mapBounds', 'fitView',
   'recolorMap', 'formatAge', 'areaText', 'healthText', 'faultText', 'modeText', 'logLevelClass', 'scaleBar',
   'arrowPose', 'mapCell', 'goalPlan', 'defaultMapName', 'mapNameValid', 'containerText', 'containerRunning',
-  'navdModeText', 'jobText', 'mapOptionText'];
+  'navdModeText', 'jobText', 'mapOptionText', 'poseBlocker', 'goalBlocker'];
 const context = {TextDecoder, DataView, Uint8Array, JSON, Math, Number, Date, String, Array};
 vm.runInNewContext(source + '\n' + names.map(n => `this.${n}=${n};`).join(''), context);
 const h = context;
@@ -120,3 +120,18 @@ assert.equal(h.jobText({op: 'goal', state: 'cancelled', finished: 100}, NaN), '�
 assert.equal(h.faultText({reason: 'operator_cancel'}), '已在网页上取消导航并停车');
 assert.ok(h.mapOptionText({name: 'room', area_m2: 12.34, modified: 1761100000}).startsWith('room · 12.3 m² · '));
 assert.equal(h.mapOptionText({name: 'bad', error: 'x'}), 'bad · 无法读取');
+
+// Context menu: each item says why it cannot be used yet.
+const navd = {online: true, container: 'running healthy', mode: 'localization', job: null};
+const ready = {online: true, navd, relay: true, hasMap: true, poseFresh: true};
+assert.equal(h.poseBlocker(ready), '');
+assert.equal(h.goalBlocker(ready), '');
+assert.equal(h.goalBlocker({...ready, poseFresh: false}), '先把老三的位置设好');
+assert.equal(h.goalBlocker({...ready, navd: {...navd, mode: 'mapping'}, poseFresh: false}), '还没有老三的实时位置');
+assert.equal(h.poseBlocker({...ready, navd: {...navd, mode: 'mapping'}}), '建图时不用设置位置');
+assert.equal(h.poseBlocker({...ready, relay: false}), '地图还没加载好');
+assert.equal(h.goalBlocker({...ready, hasMap: false}), '还没有地图');
+assert.equal(h.goalBlocker({...ready, online: false}), '老三离线或地图数据未连接');
+assert.equal(h.goalBlocker({...ready, navd: {online: false}}), '导航服务未连接');
+assert.equal(h.poseBlocker({...ready, navd: {...navd, container: 'exited'}}), '导航容器没有运行');
+assert.equal(h.goalBlocker({...ready, navd: {...navd, job: {op: 'localize', state: 'running'}}}), '「加载地图定位」还没完成');
