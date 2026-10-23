@@ -22,15 +22,22 @@ RUNAWAY_SPEED = 0.3
 # T136 stop, so motion no longer depends on every web packet arriving in time.
 WHEEL_RESEND = 0.1
 # Gimbal knob: full deflection turns at this many degrees per second, integrated at
-# GIMBAL_PERIOD inside the +-45 / -15..45 limits of the 2026-10-02 acceptance.
+# GIMBAL_PERIOD inside the PAN_LIMIT / TILT_MIN..TILT_MAX command limits.
 # 2026-10-22, user decision: the old 2 deg per 100 ms step and T133 SPD=10 (about
 # 1 deg/s at the servo) made the camera crawl; Waveshare's own page sends SPD 0.
+# 2026-10-23, user decision: the 2026-10-02 acceptance limits (+-45 / -15..45) gave
+# only a 90 deg sweep, and with the pan servo's zero about 45 deg right of straight
+# ahead it all lay to the right. Widen to +-170 / -30..90: the factory firmware
+# (ugv_base_ros gimbal_module.h) constrains T133 to +-180 / -30..90, and 10 deg are
+# kept off the pan ends so the servo never sits on the firmware boundary. Cable
+# slack at the ends is checked on the car before this goes live; the zero itself
+# is recalibrated with `tvpet-gimbal-center` (firmware T502).
 GIMBAL_RATE = 60.0
 GIMBAL_PERIOD = 0.05
 GIMBAL_SPD = 0
 GIMBAL_ACC = 128
-PAN_LIMIT = 45.0
-TILT_MIN, TILT_MAX = -15.0, 45.0
+PAN_LIMIT = 170.0
+TILT_MIN, TILT_MAX = -30.0, 90.0
 
 
 def parse_telemetry(line: bytes) -> dict[str, Any] | None:
@@ -318,7 +325,7 @@ class Board:
         ):
             return "底盘速度或电压反馈异常"
         # Allow 2 deg of measured servo overshoot at the fast factory speed (2026-10-22,
-        # was 0.5 deg at SPD 10); command limits stay at +-45 / -15..45.
+        # was 0.5 deg at SPD 10) beyond the command limits.
         pan, tilt = self.telemetry["pan"], self.telemetry["tilt"]
         if not -PAN_LIMIT - 2 <= pan <= PAN_LIMIT + 2 or not TILT_MIN - 2 <= tilt <= TILT_MAX + 2:
             return "云台反馈超出控制范围"

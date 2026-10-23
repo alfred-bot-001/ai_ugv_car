@@ -75,7 +75,7 @@ def verify(port: str) -> dict[str, Any]:
             measured = [state for _, state in reverse if state["L"] < -0.01 and state["R"] < -0.01]
             before = collect(0.2)[-1][1]
             pan, tilt = float(before["pan"]), float(before["tilt"])
-            if not -45 <= pan <= 42 or not -15 <= tilt <= 45:
+            if not -170 <= pan <= 167 or not -30 <= tilt <= 90:
                 raise RuntimeError("Current gimbal position outside conservative test envelope")
             send({"T": 133, "X": pan + 3, "Y": tilt, "SPD": 10, "ACC": 5})
             gimbal_move = collect(0.5)

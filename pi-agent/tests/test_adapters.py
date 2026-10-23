@@ -160,7 +160,7 @@ def test_uart_watchdog_and_evidence(tmp_path: Path, monkeypatch) -> None:
         time.sleep(0.15)  # integrated at 20 Hz: pan grows, tilt stays, limits hold
         gimbal = [c for c in writes() if c.get("T") == 133]
         assert gimbal and gimbal[-1]["X"] > gimbal[0]["X"] >= 0 and gimbal[-1]["Y"] == 0
-        assert gimbal[-1]["SPD"] == 0 and all(c["X"] <= 45 for c in gimbal)
+        assert gimbal[-1]["SPD"] == 0 and all(c["X"] <= 170 for c in gimbal)
         board.stop(emergency=True)
         assert json.loads(uart.write.call_args_list[-1].args[0]) == {"T": 135}
         assert guard.estopped
@@ -193,3 +193,32 @@ def test_m2_handshake_ack_and_transient_wakeup(monkeypatch) -> None:
     assert packets[0] == encode(255, 42, b"\xa5\x00\x00\x00")
     assert b"manual_wakeup" in packets[1] and b"setting" not in packets[1]
     assert m2.last_seen > 0
+
+
+def test_gimbal_limits_follow_the_factory_range() -> None:
+    """2026-10-23: pan +-170, tilt -30..90 (firmware allows +-180 / -30..90)."""
+    board = Board("test-uart", Guard())
+    board.serial = Mock()
+
+    def targets(pan: float, tilt: float, x: float, y: float) -> tuple[float, float]:
+        board.pan, board.tilt = pan, tilt
+        now = time.monotonic()
+        board.last_gimbal_at = now - 0.2
+        stick = Stick(target="gimbal", x=x, y=y, lease="test-lease-0123456789", sequence=1)
+        board._drive_gimbal(stick, now)
+        command = json.loads(board.serial.write.call_args.args[0])
+        return command["X"], command["Y"]
+
+    assert targets(169.0, 0.0, 1, 0) == (170.0, 0.0)
+    assert targets(-169.0, 0.0, -1, 0) == (-170.0, 0.0)
+    assert targets(0.0, 89.0, 0, 1) == (0.0, 90.0)
+    assert targets(0.0, -29.0, 0, -1) == (0.0, -30.0)
+    assert targets(100.0, 60.0, 1, 0) == (112.0, 60.0)  # 60 deg/s * 0.2 s inside the range
+
+    board.received_at = time.monotonic()
+    board.telemetry = {"L": 0, "R": 0, "v": 12.1, "pan": -160.0, "tilt": 85.0}
+    assert board.health_error() == ""
+    board.telemetry["pan"] = 175.0
+    assert board.health_error() == "云台反馈超出控制范围"
+    board.telemetry["pan"], board.telemetry["tilt"] = 0.0, -35.0
+    assert board.health_error() == "云台反馈超出控制范围"
