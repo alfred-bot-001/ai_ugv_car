@@ -15,7 +15,8 @@ const layers={scan:true,trail:true,plan:true,grid:false};
 const logKeys=new Set();
 // Map actions: a right click (long press on touch) opens a menu at a map point; "set the
 // pose" then takes one more click for the heading. arrow is that heading being chosen.
-let tool='view',arrow=null,pendingTarget=null,menuPoint=null,longPress=null,maps=[],mapsLoaded=false,mapsLoading=false;
+let tool='view',arrow=null,pendingTarget=null,menuPoint=null,longPress=null,maps=[],defaultMap=null,mapsLoaded=false,mapsLoading=false;
+let rotationFor='';
 let jobSeen=false,lastJobKey='',overwriteName='',dialogPending=null;
 // Wheel and gimbal joysticks (same held-state relay as the dashboard: the knobs stay put).
 let controlSocket=null,press={wheels:null,gimbal:null},dragging=null,pressGeneration=0,controlSequence=0,lease='',leasing=null,streamTimer=null,lastSend=0;
@@ -77,21 +78,23 @@ const stage=$('#map-stage'),canvas=$('#map-canvas'),context=canvas.getContext('2
 function resize(){const rect=stage.getBoundingClientRect(),ratio=window.devicePixelRatio||1;if(rect.width!==view.width||rect.height!==view.height||ratio!==dpr){dpr=ratio;canvas.width=Math.round(rect.width*dpr);canvas.height=Math.round(rect.height*dpr);view={...view,width:rect.width,height:rect.height};dirty=true;}}
 function polyline(points,color,width,dash=[]){if(points.length<2)return;context.beginPath();points.forEach(([x,y],i)=>{const [sx,sy]=worldToScreen(view,x,y);if(i)context.lineTo(sx,sy);else context.moveTo(sx,sy);});context.strokeStyle=color;context.lineWidth=width;context.setLineDash(dash);context.lineJoin='round';context.stroke();context.setLineDash([]);}
 function drawGrid(){
-  const [x0,y1]=screenToWorld(view,0,0),[x1,y0]=screenToWorld(view,view.width,view.height);
-  if(x1-x0>200)return;
+  const corners=[[0,0],[view.width,0],[0,view.height],[view.width,view.height]].map(([sx,sy])=>screenToWorld(view,sx,sy));
+  const x0=Math.min(...corners.map(c=>c[0])),x1=Math.max(...corners.map(c=>c[0])),y0=Math.min(...corners.map(c=>c[1])),y1=Math.max(...corners.map(c=>c[1]));
+  if(x1-x0>200||y1-y0>200)return;
   context.strokeStyle='rgba(32,52,45,.12)';context.lineWidth=1;context.beginPath();
-  for(let x=Math.ceil(x0);x<=x1;x++){const [sx]=worldToScreen(view,x,0);context.moveTo(sx,0);context.lineTo(sx,view.height);}
-  for(let y=Math.ceil(y0);y<=y1;y++){const [,sy]=worldToScreen(view,0,y);context.moveTo(0,sy);context.lineTo(view.width,sy);}
+  for(let x=Math.ceil(x0);x<=x1;x++){context.moveTo(...worldToScreen(view,x,y0));context.lineTo(...worldToScreen(view,x,y1));}
+  for(let y=Math.ceil(y0);y<=y1;y++){context.moveTo(...worldToScreen(view,x0,y));context.lineTo(...worldToScreen(view,x1,y));}
   context.stroke();
 }
 function drawRobot(pose,stale){
-  const [sx,sy]=worldToScreen(view,pose.x,pose.y),r=Math.max(7,ROBOT_RADIUS*view.scale),c=Math.cos(pose.yaw),s=Math.sin(pose.yaw);
+  const [sx,sy]=worldToScreen(view,pose.x,pose.y),r=Math.max(7,ROBOT_RADIUS*view.scale),heading=pose.yaw+(view.rot||0),c=Math.cos(heading),s=Math.sin(heading);
   context.beginPath();context.arc(sx,sy,r,0,Math.PI*2);context.fillStyle=stale?'rgba(150,160,156,.45)':'rgba(201,233,160,.6)';context.fill();context.lineWidth=2;context.strokeStyle=stale?'#7d8a84':'#16705b';context.stroke();
   const tip=[sx+c*r*1.35,sy-s*r*1.35],left=[sx+(-s)*r*0.55,sy-(c)*r*0.55],right=[sx-(-s)*r*0.55,sy+(c)*r*0.55];
   context.beginPath();context.moveTo(...tip);context.lineTo(...left);context.lineTo(...right);context.closePath();context.fillStyle=stale?'#7d8a84':'#16705b';context.fill();
 }
 // A target pose: dot, footprint circle and heading arrow.
-function drawTarget(p,color){
+function drawTarget(target,color){
+  const p={...target,yaw:target.yaw+(view.rot||0)};
   const [sx,sy]=worldToScreen(view,p.x,p.y),len=Math.max(26,0.35*view.scale),c=Math.cos(p.yaw),s=Math.sin(p.yaw),ex=sx+c*len,ey=sy-s*len,head=10,spread=0.5;
   context.strokeStyle=color;context.fillStyle=color;
   context.beginPath();context.arc(sx,sy,Math.max(8,ROBOT_RADIUS*view.scale),0,Math.PI*2);context.setLineDash([4,4]);context.lineWidth=1.5;context.stroke();context.setLineDash([]);
@@ -122,7 +125,12 @@ function draw(){
   if(follow&&nav.pose&&(view.cx!==nav.pose.x||view.cy!==nav.pose.y)){view={...view,cx:nav.pose.x,cy:nav.pose.y};dirty=true;}
   if(!dirty)return;dirty=false;
   context.setTransform(dpr,0,0,dpr,0,0);context.clearRect(0,0,view.width,view.height);
-  if(nav.mapImage&&nav.map){const b=mapBounds(nav.map),[x0,y0]=worldToScreen(view,b.minX,b.maxY);context.imageSmoothingEnabled=view.scale*nav.map.resolution<2;context.drawImage(nav.mapImage,x0,y0,(b.maxX-b.minX)*view.scale,(b.maxY-b.minY)*view.scale);}
+  if(nav.mapImage&&nav.map){
+    // Image pixel (i, j) is world (minX + i*res, maxY - j*res); map it with one affine.
+    const b=mapBounds(nav.map),res=nav.map.resolution,[ox,oy]=worldToScreen(view,b.minX,b.maxY),[ux,uy]=worldToScreen(view,b.minX+res,b.maxY),[vx,vy]=worldToScreen(view,b.minX,b.maxY-res);
+    context.save();context.setTransform(dpr*(ux-ox),dpr*(uy-oy),dpr*(vx-ox),dpr*(vy-oy),dpr*ox,dpr*oy);
+    context.imageSmoothingEnabled=view.scale*res<2;context.drawImage(nav.mapImage,0,0);context.restore();
+  }
   if(layers.grid)drawGrid();
   if(layers.trail)polyline(nav.trail,'rgba(22,112,91,.38)',2);
   if(layers.plan)polyline(nav.plan,'#2a7de1',3,[8,5]);
@@ -152,7 +160,7 @@ stage.addEventListener('pointermove',e=>{
   const previous=pointers.get(e.pointerId);if(!previous)return;pointers.set(e.pointerId,[e.clientX,e.clientY]);
   if(longPress&&longPress.id===e.pointerId&&Math.hypot(e.clientX-longPress.x,e.clientY-longPress.y)>10)cancelLongPress();
   if(tool==='heading')return;
-  if(pointers.size===1){const dx=e.clientX-previous[0],dy=e.clientY-previous[1];if(Math.abs(dx)+Math.abs(dy)<1)return;setFollow(false);view={...view,cx:view.cx-dx/view.scale,cy:view.cy+dy/view.scale};dirty=true;}
+  if(pointers.size===1){const dx=e.clientX-previous[0],dy=e.clientY-previous[1];if(Math.abs(dx)+Math.abs(dy)<1)return;setFollow(false);view=panBy(view,dx,dy);dirty=true;}
   else if(pointers.size===2&&pinch){const [a,b]=[...pointers.values()],distance=Math.hypot(a[0]-b[0],a[1]-b[1]),rect=stage.getBoundingClientRect();if(distance>0&&pinch.distance>0){view=zoomAt(view,(a[0]+b[0])/2-rect.left,(a[1]+b[1])/2-rect.top,distance/pinch.distance);pinch.distance=distance;dirty=true;}}
 });
 for(const kind of ['pointerup','pointercancel','lostpointercapture'])stage.addEventListener(kind,e=>{
@@ -201,8 +209,33 @@ function renderFacts(){
   else if(activeGoal()){banner.className='notice good';banner.textContent=(nav.agent?.navd?.job?.op==='explore'?'老三正在自动探索建图，蓝色箭头是这一段的目标':'老三正在自主导航去目标点（蓝色箭头）')+' · 随时可点「取消导航」或「紧急停止」。';}
   else{banner.className='notice good';banner.textContent=(state?.mode==='mapping'?'建图中':'定位导航中')+' · 地图、激光和位置实时更新。';}
   $('#last-update').textContent=state?'导航数据 '+formatAge(stateAge):'等待数据';
+  loadRotation();
   renderControls();
 }
+
+// ---- display rotation ("摆正"), remembered per map in this browser
+function rotationKey(){const state=nav.state;return 'nav-rotation:'+(state?.mode==='localization'&&state.map?state.map:'mapping');}
+function readRotation(key){try{return Number(localStorage.getItem(key))||0;}catch{return 0;}}
+function loadRotation(){const key=rotationKey();if(key===rotationFor)return;rotationFor=key;setRotation(readRotation(key)*Math.PI/180,false);}
+function setRotation(radians,save=true){
+  view={...view,rot:Math.atan2(Math.sin(radians),Math.cos(radians))};dirty=true;
+  if(save){try{localStorage.setItem(rotationFor||rotationKey(),String(Math.round(view.rot*180/Math.PI)));}catch{}}
+}
+function moveRotation(from,to,keep=false){
+  try{const value=localStorage.getItem('nav-rotation:'+from);if(value!==null){localStorage.setItem('nav-rotation:'+to,value);if(!keep)localStorage.removeItem('nav-rotation:'+from);}}catch{}
+}
+function wallCells(){
+  const image=nav.mapImage,data=image.getContext('2d',{willReadFrequently:true}).getImageData(0,0,image.width,image.height).data,cells=[];
+  for(let j=0;j<image.height;j++)for(let i=0;i<image.width;i++){const k=(j*image.width+i)*4;if(data[k+3]===255&&data[k]<128)cells.push([i,image.height-1-j]);}
+  return cells;
+}
+$('#rotate-left').onclick=()=>setRotation((view.rot||0)+Math.PI/12);
+$('#rotate-right').onclick=()=>setRotation((view.rot||0)-Math.PI/12);
+$('#straighten').onclick=()=>{
+  if(!nav.mapImage){toast('还没有收到地图');return;}
+  const before=view.rot||0,angle=dominantAngle(wallCells());setRotation(-angle);
+  toast(Math.abs(Math.sin(before+angle))<0.01?'地图已经是正的':'已按墙的方向摆正'+(Math.abs(angle)>=0.01?'（墙原来偏 '+Math.round(angle*180/Math.PI)+'°）':''));
+};
 
 // ---- controls
 function renderControls(){
@@ -353,7 +386,7 @@ $('#save-map').onclick=()=>guarded($('#save-map'),async()=>{
   const name=await ask({title:'保存地图',confirm:'保存',input:defaultMapName(new Date()),text:'给这张地图起个名字（字母、数字、- 或 _）。地图只保存在老三的 Pi 上。',
     validate:value=>{if(!mapNameValid(value))return '只能用字母、数字、- 或 _，最多 64 个字符';if(maps.some(m=>m.name===value)&&overwriteName!==value){overwriteName=value;return '已有同名地图「'+value+'」，再点一次「保存」会覆盖它';}return '';}});
   if(!name)return;
-  await navCommand({op:'save',map:name});toast('正在保存地图 '+name);
+  await navCommand({op:'save',map:name});moveRotation('mapping',name,true);toast('正在保存地图 '+name);
 });
 $('#localize').onclick=()=>guarded($('#localize'),async()=>{
   const name=$('#map-select').value;if(!name)return;
@@ -369,14 +402,46 @@ async function loadMaps(){
   try{
     const response=await fetch('/api/v1/nav/maps');if(response.status===401){stopAll();location.replace('/');return;}
     const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'读取地图列表失败');
-    maps=Array.isArray(data.maps)?data.maps:[];mapsLoaded=true;renderMapList();
+    maps=Array.isArray(data.maps)?data.maps:[];defaultMap=typeof data.default==='string'?data.default:null;mapsLoaded=true;renderMapList();
   }catch(error){if(!maps.length)$('#map-select').replaceChildren(new Option(error.message||'读取地图列表失败',''));}
   finally{mapsLoading=false;renderControls();}
 }
 function renderMapList(){
-  const select=$('#map-select'),current=select.value||nav.agent?.navd?.map||'';
-  select.replaceChildren(...(maps.length?maps.map(m=>{const option=new Option(mapOptionText(m),m.name);option.disabled=!!m.error;return option;}):[new Option('还没有保存的地图','')]));
+  const select=$('#map-select'),current=select.value||nav.agent?.navd?.map||defaultMap||'';
+  select.replaceChildren(...(maps.length?maps.map(m=>{const option=new Option((m.name===defaultMap?'★ ':'')+mapOptionText(m),m.name);option.disabled=!!m.error;return option;}):[new Option('还没有保存的地图','')]));
   if(maps.some(m=>m.name===current&&!m.error))select.value=current;
+  renderMapCards();
+}
+// "管理地图": thumbnails load only while the list is open (each is a request to the car).
+function renderMapCards(){
+  const open=$('#map-admin').open;
+  $('#map-cards').replaceChildren(...maps.map(m=>{
+    const item=document.createElement('li');item.className='map-card';
+    const image=document.createElement('img');image.alt='';image.width=64;image.height=64;image.loading='lazy';
+    if(open&&!m.error)image.src='/api/v1/nav/maps/'+encodeURIComponent(m.name)+'/preview.png?v='+m.modified;
+    const info=document.createElement('div');
+    const title=document.createElement('strong');title.textContent=m.name+(m.name===defaultMap?' ★ 默认':'');
+    const meta=document.createElement('small');meta.textContent=m.error?'无法读取':mapOptionText(m).split(' · ').slice(1).join(' · ');
+    const actions=document.createElement('div');actions.className='map-card-actions';
+    for(const [label,handler,danger] of [['设为默认',()=>setDefault(m.name),false],['改名',()=>renameMap(m.name),false],['删除',()=>deleteMap(m.name),true]]){
+      const button=document.createElement('button');button.type='button';button.textContent=label;if(danger)button.className='danger';
+      button.disabled=label==='设为默认'&&(m.name===defaultMap||!!m.error);button.onclick=()=>guarded(button,handler);actions.append(button);
+    }
+    info.append(title,meta,actions);item.append(image,info);return item;
+  }));
+}
+$('#map-admin').addEventListener('toggle',()=>{if($('#map-admin').open)renderMapCards();});
+async function setDefault(name){await navCommand({op:'default',map:name});toast('已把「'+name+'」设为默认地图');await loadMaps();}
+async function renameMap(name){
+  const to=await ask({title:'给地图「'+name+'」改名',confirm:'改名',input:name,text:'新名字只能用字母、数字、- 或 _。地点、禁行区和默认设置会跟着改。',
+    validate:value=>!mapNameValid(value)?'只能用字母、数字、- 或 _，最多 64 个字符':value===name?'名字没有变化':maps.some(m=>m.name===value)?'已经有叫这个名字的地图了':''});
+  if(!to)return;
+  await navCommand({op:'rename',map:name,to});moveRotation(name,to);toast('已改名为「'+to+'」');await loadMaps();
+}
+async function deleteMap(name){
+  const ok=await ask({title:'删除地图「'+name+'」？',confirm:'删除',danger:true,text:'这张地图和它的地点、禁行区文件会移到老三 Pi 上的回收区（maps/.trash），需要时可以找回。正在使用的地图不能删除。'});
+  if(!ok)return;
+  await navCommand({op:'delete',map:name});toast('已删除「'+name+'」（在回收区，可找回）');await loadMaps();
 }
 $('#refresh-maps').onclick=()=>loadMaps();
 $('#map-select').onchange=()=>renderControls();

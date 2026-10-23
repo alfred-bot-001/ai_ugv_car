@@ -19,15 +19,29 @@ function parseNavPacket(buffer){
   return {meta,payload:bytes.subarray(4+size)};
 }
 
-function worldToScreen(view,x,y){return [(x-view.cx)*view.scale+view.width/2,view.height/2-(y-view.cy)*view.scale];}
-function screenToWorld(view,sx,sy){return [view.cx+(sx-view.width/2)/view.scale,view.cy-(sy-view.height/2)/view.scale];}
+// view.rot (radians, default 0) turns the map on screen counter-clockwise ("摆正").
+function rotate(x,y,angle){const c=Math.cos(angle),s=Math.sin(angle);return [x*c-y*s,x*s+y*c];}
+function worldToScreen(view,x,y){
+  const [u,v]=rotate(x-view.cx,y-view.cy,view.rot||0);
+  return [u*view.scale+view.width/2,view.height/2-v*view.scale];
+}
+function screenToWorld(view,sx,sy){
+  const [dx,dy]=rotate((sx-view.width/2)/view.scale,(view.height/2-sy)/view.scale,-(view.rot||0));
+  return [view.cx+dx,view.cy+dy];
+}
+// Move the view by a screen drag of (dx, dy) pixels.
+function panBy(view,dx,dy){
+  const [wx,wy]=rotate(dx/view.scale,-dy/view.scale,-(view.rot||0));
+  return {...view,cx:view.cx-wx,cy:view.cy-wy};
+}
 
 function clampScale(scale){return Math.min(NAV_MAX_SCALE,Math.max(NAV_MIN_SCALE,scale));}
 
 // Zoom keeping the world point under (sx, sy) fixed on screen.
 function zoomAt(view,sx,sy,factor){
   const [wx,wy]=screenToWorld(view,sx,sy),scale=clampScale(view.scale*factor);
-  return {...view,scale,cx:wx-(sx-view.width/2)/scale,cy:wy+(sy-view.height/2)/scale};
+  const [dx,dy]=rotate((sx-view.width/2)/scale,(view.height/2-sy)/scale,-(view.rot||0));
+  return {...view,scale,cx:wx-dx,cy:wy-dy};
 }
 
 function mapBounds(meta){
@@ -36,7 +50,8 @@ function mapBounds(meta){
 }
 
 function fitView(view,bounds,margin=24){
-  const w=Math.max(bounds.maxX-bounds.minX,0.5),h=Math.max(bounds.maxY-bounds.minY,0.5);
+  const r=view.rot||0,bw=Math.max(bounds.maxX-bounds.minX,0.5),bh=Math.max(bounds.maxY-bounds.minY,0.5);
+  const w=Math.abs(bw*Math.cos(r))+Math.abs(bh*Math.sin(r)),h=Math.abs(bw*Math.sin(r))+Math.abs(bh*Math.cos(r));
   const scale=clampScale(Math.min((view.width-2*margin)/w,(view.height-2*margin)/h));
   return {...view,scale,cx:(bounds.minX+bounds.maxX)/2,cy:(bounds.minY+bounds.maxY)/2};
 }
@@ -251,4 +266,24 @@ function exploreBlocker(s){
   if(!s.hasMap)return '还没有地图';
   if(!s.poseFresh)return '还没有老三的实时位置';
   return '';
+}
+
+// The wall direction (radians, in (-pi/4, pi/4]) most walls line up with. Each wall
+// cell fits a local line through its neighbours (principal axis); straight neighbourhoods
+// vote with angle*4 so walls at right angles agree, and the vote is averaged. Turning the
+// view by minus this puts the walls level ("摆正"). cells are [col, row] with row up.
+function dominantAngle(cells,radius=5){
+  const occupied=new Set(cells.map(([c,r])=>c+','+r));let sx=0,sy=0;
+  for(const [c,r] of cells){
+    const near=[];
+    for(let dx=-radius;dx<=radius;dx++)for(let dy=-radius;dy<=radius;dy++)
+      if(dx*dx+dy*dy<=radius*radius&&occupied.has((c+dx)+','+(r+dy)))near.push([dx,dy]);
+    if(near.length<4)continue;
+    const mx=near.reduce((a,p)=>a+p[0],0)/near.length,my=near.reduce((a,p)=>a+p[1],0)/near.length;
+    let xx=0,yy=0,xy=0;for(const [x,y] of near){xx+=(x-mx)**2;yy+=(y-my)**2;xy+=(x-mx)*(y-my);}
+    const trace=xx+yy;if(trace<=0)continue;
+    const straight=Math.hypot(xx-yy,2*xy)/trace;if(straight<0.6)continue;  // 1 for a line
+    const theta=0.5*Math.atan2(2*xy,xx-yy);sx+=straight*Math.cos(4*theta);sy+=straight*Math.sin(4*theta);
+  }
+  return Math.hypot(sx,sy)<1e-9?0:Math.atan2(sy,sx)/4;
 }

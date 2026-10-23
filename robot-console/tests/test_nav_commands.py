@@ -1,5 +1,6 @@
 """Map page controls: login, CSRF, strict bodies and audit before anything reaches the car."""
 
+import base64
 import threading
 import time
 from pathlib import Path
@@ -54,7 +55,16 @@ def test_nav_commands_reach_the_device_with_audit(tmp_path: Path) -> None:
                         args = message["args"]
                         reply: dict[str, Any] = {"kind": "result", "id": message["id"], "ok": True}
                         if args.get("op") == "maps":
-                            reply["nav"] = {"ok": True, "maps": [{"name": "room"}]}
+                            reply["nav"] = {
+                                "ok": True,
+                                "maps": [{"name": "room"}],
+                                "default": "room",
+                            }
+                        elif args.get("op") == "preview":
+                            png = base64.b64encode(b"\x89PNG\r\n\x1a\nthumb").decode()
+                            reply["nav"] = {"ok": True, "png": png, "meta": {}}
+                        elif args.get("op") == "rename":
+                            reply["nav"] = {"ok": True, "renamed": args["to"]}
                         elif args.get("op") == "save":
                             reply.update(ok=False, error="「开始建图」还没完成，请稍候")
                         else:
@@ -91,12 +101,30 @@ def test_nav_commands_reach_the_device_with_audit(tmp_path: Path) -> None:
                 "/api/v1/nav/command", json={"op": "save", "map": "room"}, headers=secured
             )
             assert busy.status_code == 409 and "还没完成" in busy.json()["detail"]
-            assert client.get("/api/v1/nav/maps").json() == {"maps": [{"name": "room"}]}
+            assert client.get("/api/v1/nav/maps").json() == {
+                "maps": [{"name": "room"}],
+                "default": "room",
+            }
+            thumb = client.get("/api/v1/nav/maps/room/preview.png")
+            assert thumb.status_code == 200 and thumb.content.startswith(b"\x89PNG")
+            assert thumb.headers["cache-control"] == "no-store"
+            assert client.get("/api/v1/nav/maps/a.b/preview.png").status_code == 404
+            renamed = client.post(
+                "/api/v1/nav/command",
+                json={"op": "rename", "map": "room", "to": "study"},
+                headers=secured,
+            )
+            assert renamed.status_code == 200 and renamed.json()["renamed"] == "study"
+            preview_post = {"op": "preview", "map": "room"}
+            assert (
+                client.post("/api/v1/nav/command", json=preview_post, headers=secured).status_code
+                == 404
+            )
             sent = [m["args"]["op"] for m in received]
-            assert sent == ["goal", "save", "maps"]  # invalid bodies never left the Mini
+            assert sent == ["goal", "save", "maps", "preview", "rename"]  # invalid bodies stay
             stop.set()
         thread.join(timeout=1)
         assert client.get("/api/v1/nav/maps").status_code == 409  # offline
     with Session(store.engine) as db:
         events = [row.event for row in db.scalars(select(Audit))]
-    assert "nav.goal" in events and "nav.save" not in events
+    assert "nav.goal" in events and "nav.rename" in events and "nav.save" not in events

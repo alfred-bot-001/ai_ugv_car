@@ -8,7 +8,7 @@ const source = fs.readFileSync(new URL('../src/tvpet_console/web/navmap.js', imp
 const names = ['parseNavPacket', 'worldToScreen', 'screenToWorld', 'zoomAt', 'mapBounds', 'fitView',
   'recolorMap', 'formatAge', 'areaText', 'healthText', 'faultText', 'modeText', 'logLevelClass', 'scaleBar',
   'arrowPose', 'mapCell', 'goalPlan', 'defaultMapName', 'mapNameValid', 'containerText', 'containerRunning',
-  'navdModeText', 'jobText', 'mapOptionText', 'poseBlocker', 'goalBlocker', 'sameSession', 'nearestWall', 'logText', 'exploreBlocker', 'formatDuration'];
+  'navdModeText', 'jobText', 'mapOptionText', 'poseBlocker', 'goalBlocker', 'sameSession', 'nearestWall', 'logText', 'exploreBlocker', 'formatDuration', 'panBy', 'dominantAngle'];
 const context = {TextDecoder, DataView, Uint8Array, JSON, Math, Number, Date, String, Array};
 vm.runInNewContext(source + '\n' + names.map(n => `this.${n}=${n};`).join(''), context);
 const h = context;
@@ -159,3 +159,34 @@ assert.equal(h.exploreBlocker(mappingState), '');
 assert.equal(h.exploreBlocker(ready), '自动探索只能在建图时进行');
 assert.equal(h.exploreBlocker({...mappingState, poseFresh: false}), '还没有老三的实时位置');
 assert.equal(h.formatDuration(59), '59 秒');
+
+
+// Rotation: a point keeps its place through the round trip, zoom and pan.
+const turned = {cx: 1, cy: 2, scale: 50, width: 400, height: 300, rot: Math.PI / 6};
+const [tx, ty] = h.worldToScreen(turned, 3, -1);
+const [bx, by] = h.screenToWorld(turned, tx, ty);
+assert.ok(Math.abs(bx - 3) < 1e-9 && Math.abs(by + 1) < 1e-9);
+const east = h.worldToScreen({...turned, cx: 0, cy: 0}, 1, 0);
+assert.ok(Math.abs(east[0] - (200 + 50 * Math.cos(Math.PI / 6))) < 1e-9 && east[1] < 150);
+const zoomedTurn = h.zoomAt(turned, 300, 50, 2);
+const keep = h.screenToWorld(turned, 300, 50), kept = h.screenToWorld(zoomedTurn, 300, 50);
+assert.ok(Math.abs(keep[0] - kept[0]) < 1e-9 && Math.abs(keep[1] - kept[1]) < 1e-9);
+const panned = h.panBy(turned, 40, -10);
+const before0 = h.worldToScreen(turned, 0.5, 0.5), after0 = h.worldToScreen(panned, 0.5, 0.5);
+assert.ok(Math.abs(after0[0] - before0[0] - 40) < 1e-9 && Math.abs(after0[1] - before0[1] + 10) < 1e-9);
+const fitTurned = h.fitView({...turned, rot: Math.PI / 2}, {minX: 0, minY: 0, maxX: 8, maxY: 2});
+assert.ok(Math.abs(fitTurned.scale - 31.5) < 1e-9);  // 8 m wall now runs up the 300 px screen
+
+// Straightening: walls drawn 20 deg off are found at 20 deg; level walls at 0.
+const wallCells = (deg) => {
+  const out = [], a = deg * Math.PI / 180;
+  for (let i = 0; i < 60; i++) {
+    out.push([Math.round(i * Math.cos(a)), Math.round(i * Math.sin(a))]);
+    out.push([Math.round(30 * Math.cos(a) - i * Math.sin(a)), Math.round(30 * Math.sin(a) + i * Math.cos(a))]);
+  }
+  return out;
+};
+assert.ok(Math.abs(h.dominantAngle(wallCells(20)) * 180 / Math.PI - 20) <= 3);
+assert.ok(Math.abs(h.dominantAngle(wallCells(-15)) * 180 / Math.PI + 15) <= 3);
+assert.ok(Math.abs(h.dominantAngle(wallCells(0))) < 1e-9);
+assert.equal(h.dominantAngle([]), 0);
