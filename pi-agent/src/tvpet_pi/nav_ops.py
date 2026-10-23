@@ -30,8 +30,12 @@ NavOp = Literal[
     "rename",
     "delete",
     "default",
+    "route",
+    "route_save",
+    "patrol",
+    "reports",
 ]
-MAP_OPS = ("save", "localize", "preview", "rename", "delete", "default")
+MAP_OPS = ("save", "localize", "preview", "rename", "delete", "default", "route", "route_save")
 POSE_OPS = ("pose", "goal")
 # What the map page log says when the operator starts something.
 OP_TEXT = {
@@ -45,7 +49,24 @@ OP_TEXT = {
     "rename": "地图改名",
     "delete": "删除地图（移到回收区）",
     "default": "设为默认地图",
+    "route_save": "保存巡航路线",
+    "patrol": "开始巡航",
 }
+
+
+class Waypoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    x: float = Field(strict=True, ge=-COORD_LIMIT, le=COORD_LIMIT)
+    y: float = Field(strict=True, ge=-COORD_LIMIT, le=COORD_LIMIT)
+    yaw: float = Field(default=0.0, strict=True, ge=-2 * math.pi, le=2 * math.pi)
+
+
+class RouteBody(BaseModel):
+    """A patrol route as the map page edits it; ugv-navd checks it again."""
+
+    model_config = ConfigDict(extra="forbid")
+    loops: int = Field(default=1, strict=True, ge=1, le=10)
+    waypoints: list[Waypoint] = Field(min_length=1, max_length=20)
 
 
 class NavCommand(BaseModel):
@@ -58,6 +79,7 @@ class NavCommand(BaseModel):
     x: float | None = Field(default=None, strict=True, ge=-COORD_LIMIT, le=COORD_LIMIT)
     y: float | None = Field(default=None, strict=True, ge=-COORD_LIMIT, le=COORD_LIMIT)
     yaw: float | None = Field(default=None, strict=True, ge=-2 * math.pi, le=2 * math.pi)
+    route: RouteBody | None = None
 
     @model_validator(mode="after")
     def fields_match_op(self) -> "NavCommand":
@@ -65,6 +87,8 @@ class NavCommand(BaseModel):
             raise ValueError("a map name goes with the saved-map operations only")
         if (self.to is not None) != (self.op == "rename"):
             raise ValueError("a new name goes with rename only")
+        if (self.route is not None) != (self.op == "route_save"):
+            raise ValueError("a route goes with route_save only")
         pose = (self.x, self.y, self.yaw)
         if self.op in POSE_OPS:
             if any(v is None or not math.isfinite(v) for v in pose):

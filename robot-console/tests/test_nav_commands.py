@@ -63,6 +63,10 @@ def test_nav_commands_reach_the_device_with_audit(tmp_path: Path) -> None:
                         elif args.get("op") == "preview":
                             png = base64.b64encode(b"\x89PNG\r\n\x1a\nthumb").decode()
                             reply["nav"] = {"ok": True, "png": png, "meta": {}}
+                        elif args.get("op") == "route":
+                            reply["nav"] = {"ok": True, "route": {"loops": 1, "waypoints": []}}
+                        elif args.get("op") == "reports":
+                            reply["nav"] = {"ok": True, "reports": [{"name": "patrol-1.json"}]}
                         elif args.get("op") == "rename":
                             reply["nav"] = {"ok": True, "renamed": args["to"]}
                         elif args.get("op") == "save":
@@ -120,8 +124,18 @@ def test_nav_commands_reach_the_device_with_audit(tmp_path: Path) -> None:
                 client.post("/api/v1/nav/command", json=preview_post, headers=secured).status_code
                 == 404
             )
+            assert client.get("/api/v1/nav/routes/room").json()["route"]["loops"] == 1
+            assert client.get("/api/v1/nav/routes/a.b").status_code == 404
+            assert client.get("/api/v1/nav/reports").json() == {
+                "reports": [{"name": "patrol-1.json"}]
+            }
+            route_post = {"op": "route", "map": "room"}
+            assert (
+                client.post("/api/v1/nav/command", json=route_post, headers=secured).status_code
+                == 404
+            )
             sent = [m["args"]["op"] for m in received]
-            assert sent == ["goal", "save", "maps", "preview", "rename"]  # invalid bodies stay
+            assert sent == ["goal", "save", "maps", "preview", "rename", "route", "reports"]
             stop.set()
         thread.join(timeout=1)
         assert client.get("/api/v1/nav/maps").status_code == 409  # offline

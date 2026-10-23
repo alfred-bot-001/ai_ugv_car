@@ -27,6 +27,10 @@ def test_commands_take_exactly_their_fields() -> None:
     rename = NavCommand.model_validate({"op": "rename", "map": "a", "to": "b"})
     assert rename.payload() == {"op": "rename", "map": "a", "to": "b"}
     assert rename.describe() == "地图改名 a → b"
+    route = {"loops": 2, "waypoints": [{"x": 1.0, "y": 0.5}]}
+    saved = NavCommand.model_validate({"op": "route_save", "map": "a", "route": route})
+    assert saved.payload()["route"] == {"loops": 2, "waypoints": [{"x": 1.0, "y": 0.5, "yaw": 0.0}]}
+    assert NavCommand.model_validate({"op": "patrol"}).describe() == "开始巡航"
     for bad in (
         {"op": "shell"},
         {"op": "mapping", "map": "x"},
@@ -45,6 +49,12 @@ def test_commands_take_exactly_their_fields() -> None:
         {"op": "rename", "map": "a", "to": "../b"},
         {"op": "delete", "map": "a", "to": "b"},
         {"op": "preview"},
+        {"op": "route_save", "map": "a"},
+        {"op": "route_save", "map": "a", "route": {"waypoints": []}},
+        {"op": "route_save", "map": "a", "route": {"loops": 11, "waypoints": [{"x": 0, "y": 0}]}},
+        {"op": "route_save", "map": "a", "route": {"waypoints": [{"x": 0, "y": 0, "z": 1}]}},
+        {"op": "route_save", "map": "a", "route": {"waypoints": [{"x": 0, "y": 0}] * 21}},
+        {"op": "patrol", "route": {"waypoints": [{"x": 0, "y": 0}]}},
     ):
         with pytest.raises(ValidationError):
             NavCommand.model_validate(bad)

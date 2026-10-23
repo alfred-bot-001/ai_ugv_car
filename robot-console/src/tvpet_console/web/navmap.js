@@ -6,8 +6,8 @@ const NAV_PALETTE=[[245,247,244],[32,52,45],[205,211,208]];
 const NAV_MIN_SCALE=8,NAV_MAX_SCALE=600;
 // Nav2 cruises at up to 0.10 m/s (bridge MAX_LINEAR 0.12); real runs average lower.
 const NAV_AVERAGE_SPEED=0.08;
-const NAV_OP_TEXT={mapping:'开始建图',save:'保存地图',localize:'加载地图定位',pose:'设置当前位置',goal:'导航去目标点',explore:'自动探索'};
-const NAV_OP_RUNNING={mapping:'正在切换到建图模式',save:'正在保存地图',localize:'正在加载地图',pose:'正在设置位置',goal:'正在导航去目标点',explore:'正在自动探索'};
+const NAV_OP_TEXT={mapping:'开始建图',save:'保存地图',localize:'加载地图定位',pose:'设置当前位置',goal:'导航去目标点',explore:'自动探索',patrol:'巡航'};
+const NAV_OP_RUNNING={mapping:'正在切换到建图模式',save:'正在保存地图',localize:'正在加载地图',pose:'正在设置位置',goal:'正在导航去目标点',explore:'正在自动探索',patrol:'正在巡航'};
 
 function parseNavPacket(buffer){
   const bytes=new Uint8Array(buffer);
@@ -186,7 +186,9 @@ function jobText(job,now){
   const detail=job.detail&&job.detail.map?' '+job.detail.map:'';
   if(job.state==='running'){
     const seconds=Number.isFinite(now)&&Number.isFinite(job.started)?Math.max(0,Math.round(now-job.started)):null;
-    const r=job.result||{},legs=job.op==='explore'&&Number.isFinite(r.legs)?'第 '+(r.legs+1)+' 段'+(Number.isFinite(r.explored_m2)?' · 已探索 '+r.explored_m2+' m²':'')+' · ':'';
+    const r=job.result||{};let legs='';
+    if(job.op==='explore'&&Number.isFinite(r.legs))legs='第 '+(r.legs+1)+' 段'+(Number.isFinite(r.explored_m2)?' · 已探索 '+r.explored_m2+' m²':'')+' · ';
+    if(job.op==='patrol'&&Number.isFinite(r.loop)&&r.loop>0)legs='第 '+r.loop+'/'+r.loops+' 圈 · 第 '+r.index+'/'+r.points+' 点 · 已到 '+r.reached+' 段 · ';
     return (NAV_OP_RUNNING[job.op]||job.op)+detail+'…'+(seconds!=null?'（'+legs+formatDuration(seconds)+'）':'');
   }
   const result=job.message||{ok:'完成',failed:'失败',cancelled:'已取消'}[job.state]||job.state;
@@ -286,4 +288,31 @@ function dominantAngle(cells,radius=5){
     const theta=0.5*Math.atan2(2*xy,xx-yy);sx+=straight*Math.cos(4*theta);sy+=straight*Math.sin(4*theta);
   }
   return Math.hypot(sx,sy)<1e-9?0:Math.atan2(sy,sx)/4;
+}
+
+// ---- patrol routes
+const ABORT_TEXT={cancelled:'已取消',battery:'电量低',failed:'没到达',stall_body:'车轮在转但车没动',localization_lost:'定位丢失',stall_wheel_left:'左轮转不动',stall_wheel_right:'右轮转不动',operator_cancel:'网页取消'};
+function routeBlocker(s,count){
+  if(!s.online)return '老三离线或地图数据未连接';
+  if(!s.navd||!s.navd.online)return '导航服务未连接';
+  if(s.navd.mode!=='localization')return '巡航路线要在已保存的地图上编辑';
+  if(!s.hasMap)return '地图还没加载好';
+  if(count>=20)return '最多 20 个巡航点';
+  return '';
+}
+function patrolBlocker(s,count,dirty){
+  const ready=navReadyText(s);if(ready)return ready;
+  if(s.navd.mode!=='localization')return '巡航要在已保存的地图上进行';
+  if(!count)return '先在地图上加巡航点';
+  if(dirty)return '先保存路线';
+  if(!s.poseFresh)return '先把老三的位置设好';
+  return '';
+}
+function reportText(report){
+  if(!report)return '还没有巡航记录';
+  const date=new Date(report.modified*1000),p=n=>String(n).padStart(2,'0');
+  const when=(date.getMonth()+1)+'月'+date.getDate()+'日 '+p(date.getHours())+':'+p(date.getMinutes());
+  const legs=Number.isFinite(report.completed_legs)?report.completed_legs+'/'+report.planned_legs+' 段':'';
+  const result=report.ok?'全部到达':'中止：'+(ABORT_TEXT[report.abort_reason]||report.abort_reason||'未知原因');
+  return '最近一次：'+when+(report.map?' · '+report.map:'')+(legs?' · '+legs:'')+' · '+result;
 }

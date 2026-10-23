@@ -15,12 +15,15 @@ from pathlib import Path
 
 from .map_files import Grid, atomic_write, load_grid
 from .nav_relay import encode_map
+from .route import Route, parse_route
 
 PREVIEW_MAX_SIDE = 160
 TRASH = ".trash"
 DEFAULT_FILE = "default.json"
 # Every file that belongs to a map, by suffix after the map name.
-SUFFIXES = (".yaml", ".pgm", ".places.json", ".keepout.yaml", ".keepout.pgm")
+SUFFIXES = (".yaml", ".pgm", ".places.json", ".route.json", ".keepout.yaml", ".keepout.pgm")
+ROUTE_SUFFIX = ".route.json"
+MAX_REPORTS = 10
 
 
 def thumbnail(grid: Grid, max_side: int = PREVIEW_MAX_SIDE) -> tuple[dict[str, object], bytes]:
@@ -100,11 +103,12 @@ def rename(maps: Path, old: str, new: str) -> list[str]:
     for suffix in (".yaml", ".keepout.yaml"):
         if (maps / f"{new}{suffix}").exists():
             _point_image(maps / f"{new}{suffix}", old, new)
-    places = maps / f"{new}.places.json"
-    if places.exists():
-        value = json.loads(places.read_text())
-        value["map"] = new
-        atomic_write(places, json.dumps(value, ensure_ascii=False, indent=1).encode())
+    for suffix in (".places.json", ROUTE_SUFFIX):
+        sidecar = maps / f"{new}{suffix}"
+        if sidecar.exists():
+            value = json.loads(sidecar.read_text())
+            value["map"] = new
+            atomic_write(sidecar, json.dumps(value, ensure_ascii=False, indent=1).encode())
     if default_map(maps) is None and _default_name(maps) == old:
         set_default(maps, new)
     return [target.name for _, target in moved]
@@ -132,3 +136,52 @@ def trash(maps: Path, name: str, now: float | None = None) -> Path:
     if _default_name(maps) == name:
         set_default(maps, None)
     return folder
+
+
+def read_route(maps: Path, name: str) -> dict[str, object] | None:
+    """The map's saved patrol route as stored, or None."""
+    path = maps / f"{name}{ROUTE_SUFFIX}"
+    if not path.exists():
+        return None
+    value = json.loads(path.read_text())
+    parse_route(value)  # never hand out a route that would not run
+    return value if isinstance(value, dict) else None
+
+
+def route_json(name: str, route: Route) -> dict[str, object]:
+    waypoints = [
+        {"x": round(p.x, 3), "y": round(p.y, 3), "yaw": round(p.yaw, 4)} for p in route.waypoints
+    ]
+    return {"version": 1, "map": name, "loops": route.loops, "waypoints": waypoints}
+
+
+def save_route(maps: Path, name: str, route: Route) -> Path:
+    if not (maps / f"{name}.yaml").exists():
+        raise ValueError(f"找不到地图 {name}")
+    path = maps / f"{name}{ROUTE_SUFFIX}"
+    atomic_write(path, json.dumps(route_json(name, route), indent=1).encode())
+    return path
+
+
+def list_reports(reports: Path, limit: int = MAX_REPORTS) -> list[dict[str, object]]:
+    """Newest patrol reports first, summarised for the map page."""
+    found = []
+    for path in sorted(reports.glob("patrol-*.json"), reverse=True)[:limit]:
+        try:
+            value = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        found.append(
+            {
+                "name": path.name,
+                "modified": round(path.stat().st_mtime, 1),
+                "map": value.get("map"),
+                "ok": bool(value.get("ok")),
+                "completed_legs": value.get("completed_legs"),
+                "planned_legs": value.get("planned_legs"),
+                "abort_reason": value.get("abort_reason"),
+            }
+        )
+    return found
