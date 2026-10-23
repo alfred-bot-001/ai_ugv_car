@@ -8,7 +8,7 @@ const source = fs.readFileSync(new URL('../src/tvpet_console/web/navmap.js', imp
 const names = ['parseNavPacket', 'worldToScreen', 'screenToWorld', 'zoomAt', 'mapBounds', 'fitView',
   'recolorMap', 'formatAge', 'areaText', 'healthText', 'faultText', 'modeText', 'logLevelClass', 'scaleBar',
   'arrowPose', 'mapCell', 'goalPlan', 'defaultMapName', 'mapNameValid', 'containerText', 'containerRunning',
-  'navdModeText', 'jobText', 'mapOptionText', 'poseBlocker', 'goalBlocker'];
+  'navdModeText', 'jobText', 'mapOptionText', 'poseBlocker', 'goalBlocker', 'sameSession', 'nearestWall', 'logText'];
 const context = {TextDecoder, DataView, Uint8Array, JSON, Math, Number, Date, String, Array};
 vm.runInNewContext(source + '\n' + names.map(n => `this.${n}=${n};`).join(''), context);
 const h = context;
@@ -135,3 +135,18 @@ assert.equal(h.goalBlocker({...ready, online: false}), '老三离线或地图数
 assert.equal(h.goalBlocker({...ready, navd: {online: false}}), '导航服务未连接');
 assert.equal(h.poseBlocker({...ready, navd: {...navd, container: 'exited'}}), '导航容器没有运行');
 assert.equal(h.goalBlocker({...ready, navd: {...navd, job: {op: 'localize', state: 'running'}}}), '「加载地图定位」还没完成');
+
+assert.ok(h.sameSession(5, 5) && h.sameSession(undefined, 5) && h.sameSession(5, undefined));
+assert.ok(!h.sameSession(5, 6));
+
+// Nearest wall: opaque dark pixels only; free (light) and unknown (transparent) do not count.
+const grid5 = new Uint8ClampedArray(5 * 5 * 4);
+const paint = (x, y, rgba) => grid5.set(rgba, (y * 5 + x) * 4);
+for (let y = 0; y < 5; y++) for (let x = 0; x < 5; x++) paint(x, y, [251, 252, 250, 255]);
+paint(4, 2, [38, 58, 50, 255]);
+paint(0, 0, [0, 0, 0, 0]);
+assert.equal(h.nearestWall(grid5, 5, 5, 1, 2, 4), 3);
+assert.equal(h.nearestWall(grid5, 5, 5, 1, 2, 2), Infinity);
+assert.equal(h.logText('motion gate: front obstacle and turn space not verified'), '安全门：前方 30 cm 内有障碍，停止前进');
+assert.equal(h.logText('Failed to make progress'), '导航：一段时间没有进展，放弃这个目标');
+assert.equal(h.logText('something else'), 'something else');

@@ -120,9 +120,15 @@ class BoardBridge(Node):  # type: ignore[misc]
                 self.client.stop()
                 raise ValueError(decision.reason)
             self.client.command(decision.linear, decision.angular)
-            self.command_note = decision.reason
+            self.note(decision.reason)
         except (BoardError, ValueError) as error:
-            self.command_note = str(error)
+            self.note(str(error))
+
+    def note(self, reason: str) -> None:
+        """Keep the latest gate reason; log each change so the map page shows it."""
+        if reason and reason != self.command_note:
+            self.get_logger().warning(f"motion gate: {reason}")
+        self.command_note = reason
 
     def poll(self) -> None:
         now = time.monotonic()

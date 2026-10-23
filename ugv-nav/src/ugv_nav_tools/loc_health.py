@@ -165,3 +165,14 @@ class LocalizationHealth:
     def on_covariance(self, covariance: Sequence[float]) -> None:
         if self.localization:
             self.reasons["covariance"] = covariance_fault(covariance)
+
+
+def should_halt(reason: str | None, board: dict[str, object]) -> bool:
+    """Stop only while navigation drives the chassis and no safety stop is latched yet.
+
+    2026-10-23: in mapping mode SLAM corrects map->odom by 0.3-0.5 m while the operator
+    drives by hand; halting then stopped the joystick and left a stale fault on the page.
+    The car is only at risk from bad localization while Nav2 is steering it.
+    """
+    fault = board.get("fault")
+    return bool(reason) and board.get("nav_owned") is True and not isinstance(fault, dict)

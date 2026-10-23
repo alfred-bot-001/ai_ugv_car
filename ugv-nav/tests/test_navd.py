@@ -20,6 +20,7 @@ from ugv_nav_tools.map_files import write_pgm
 from ugv_nav_tools.navctl import NavCtl, Settings
 from ugv_nav_tools.navd import (
     Navd,
+    active_managers,
     docker_state,
     env_mode,
     goal_summary,
@@ -38,10 +39,17 @@ class FakeRun:
         self.replies = replies
         self.calls: list[list[str]] = []
         self.armed_during_navigate: list[bool] = []
+        # docker logs of the current container; each mode switch pops the next one.
+        self.logs = [ACTIVE_LOGS]
+        self.container_logs = ""
 
     def __call__(self, command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         self.calls.append(command)
         stdout = ""
+        if command[-3:] == ["up", "-d", "--force-recreate"]:
+            self.container_logs = self.logs.pop(0) if len(self.logs) > 1 else self.logs[0]
+        if command[:4] == ["sudo", "-n", "docker", "logs"]:
+            stdout = self.container_logs
         if "ugv-ros-op" in command:
             op = command[command.index("ugv-ros-op") + 1]
             if op == "navigate":
@@ -53,6 +61,17 @@ class FakeRun:
 
     def ops(self) -> list[str]:
         return [c[c.index("ugv-ros-op") + 1] for c in self.calls if "ugv-ros-op" in c]
+
+
+ACTIVE_LOGS = (
+    "[lifecycle_manager-9] [INFO] [1.0] [lifecycle_manager_localization]: "
+    "\x1b[34m\x1b[1mManaged nodes are active\x1b[0m\x1b[0m\n"
+    "[lifecycle_manager-15] [INFO] [2.0] [lifecycle_manager_navigation]: "
+    "Managed nodes are active\n"
+)
+STUCK_LOGS = (
+    "[lifecycle_manager_localization]: Configuring map_server\n" + ACTIVE_LOGS.split("\n")[1]
+)
 
 
 class Deferred:
@@ -84,11 +103,13 @@ def make_navd(
     ctl = NavCtl(settings, run=run, board=board, echo=lambda _: None, sleep=lambda _: None)
     deferred = Deferred()
     clock = iter(range(1000, 10**6))
+    ticks = iter(range(0, 10**6, 10))  # each look at the clock is 10 s later
     navd = Navd(
         ctl,
         clock=lambda: float(next(clock)),
         start=deferred,
         inspect=lambda _: "running healthy",
+        monotonic=lambda: float(next(ticks)),
     )
     return navd, run, deferred
 
@@ -172,13 +193,13 @@ def test_maps_are_listed_newest_first_without_masks(tmp_path: Path) -> None:
 def test_mode_jobs_run_one_at_a_time(tmp_path: Path) -> None:
     navd, run, deferred = make_navd(tmp_path)
     reply = navd.handle({"op": "mapping"})
-    assert reply["job"]["state"] == "running" and navd.status()["container"] == "starting"
+    assert reply["job"]["state"] == "running" and navd.container[0] == "starting"
     with pytest.raises(ValueError, match="还没完成"):
         navd.handle({"op": "save", "map": "room"})
     deferred.run_all()
     status = navd.status()
     assert status["job"]["state"] == "ok" and status["mode"] == "mapping"
-    assert run.calls[-1][-3:] == ["up", "-d", "--force-recreate"]
+    assert ["up", "-d", "--force-recreate"] in [c[-3:] for c in run.calls]
     navd.handle({"op": "save", "map": "room"})
     deferred.run_all()
     assert navd.job is not None and navd.job.message == "地图已保存为 room"
@@ -300,3 +321,33 @@ def test_socket_is_private_and_answers_json(tmp_path: Path) -> None:
         stopping.set()
         thread.join(timeout=2)
         assert not path.exists()
+
+
+def test_active_managers_ignore_colors_and_other_lines() -> None:
+    assert active_managers(ACTIVE_LOGS) == {"localization", "navigation"}
+    assert active_managers(STUCK_LOGS) == {"navigation"}
+    assert active_managers("") == set()
+
+
+def test_a_stuck_bringup_is_recreated_once(tmp_path: Path) -> None:
+    navd, run, deferred = make_navd(tmp_path)
+    write_map(navd.ctl.settings.maps, "room")
+    run.logs = [STUCK_LOGS, ACTIVE_LOGS]
+    navd.handle({"op": "localize", "map": "room"})
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "ok"
+    assert navd.job.message == "已加载地图 room（启动卡住，已自动重试），请设置老三的位置"
+    assert sum(c[-3:] == ["up", "-d", "--force-recreate"] for c in run.calls) == 2
+
+
+def test_a_bringup_stuck_twice_fails_clearly(tmp_path: Path) -> None:
+    navd, run, deferred = make_navd(tmp_path)
+    write_map(navd.ctl.settings.maps, "room")
+    run.logs = [STUCK_LOGS]
+    navd.handle({"op": "localize", "map": "room"})
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "failed"
+    assert navd.job.message == "导航容器的定位模块没能启动，请再试一次"
+    navd.handle({"op": "mapping"})  # mapping only needs the navigation manager
+    deferred.run_all()
+    assert navd.job.state == "ok" and navd.job.message == "已进入建图模式"

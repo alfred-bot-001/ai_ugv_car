@@ -43,11 +43,16 @@ function connectNav(){
 }
 function handlePacket({meta,payload}){
   if(Number.isFinite(meta.stamp)&&(meta.kind==='state'||meta.kind==='agent'))clockOffset=meta.stamp-Date.now()/1000;
-  if(meta.kind==='map')loadMap(meta,payload);
+  if(meta.kind==='map'){if(sameSession(meta.session,nav.state?.session))loadMap(meta,payload);}
   else if(meta.kind==='pose'&&Number.isFinite(meta.x)&&Number.isFinite(meta.y)&&Number.isFinite(meta.yaw)){nav.pose=meta;pushTrail(meta);}
   else if(meta.kind==='scan')nav.scan=Array.isArray(meta.points)?meta.points:[];
   else if(meta.kind==='plan')nav.plan=Array.isArray(meta.points)?meta.points:[];
-  else if(meta.kind==='state')nav.state=meta;
+  else if(meta.kind==='state'){
+    // A new container run: the cached map, trail and scan belong to the previous one.
+    const previous=nav.state?.session??nav.map?.session;
+    if(!sameSession(previous,meta.session)){resetMap();nav.pose=null;}
+    nav.state=meta;
+  }
   else if(meta.kind==='agent')nav.agent=meta;
   else if(meta.kind==='log')addLog(meta);
   dirty=true;
@@ -292,6 +297,16 @@ function cellKind(x,y){
   return pixel[3]===0?'unknown':pixel[0]<128?'wall':'free';
 }
 function finishHeading(){const target=headingTarget(arrow);setTool('view');runTarget('pose',target);}
+// Metres from a map point to the nearest wall within 0.5 m (Infinity when farther).
+const WALL_WARN_M=0.35;
+function wallDistance(x,y){
+  if(!nav.map||!nav.mapImage)return Infinity;
+  const cell=mapCell(nav.map,x,y);if(!cell)return Infinity;
+  const reach=Math.ceil(0.5/nav.map.resolution),c0=Math.max(0,cell[0]-reach),r0=Math.max(0,cell[1]-reach);
+  const w=Math.min(nav.map.width,cell[0]+reach+1)-c0,h=Math.min(nav.map.height,cell[1]+reach+1)-r0;
+  const pixels=nav.mapImage.getContext('2d',{willReadFrequently:true}).getImageData(c0,r0,w,h).data;
+  return nearestWall(pixels,w,h,cell[0]-c0,cell[1]-r0,reach)*nav.map.resolution;
+}
 async function runTarget(kind,target){
   pendingTarget={...target,tool:kind};dirty=true;
   try{if(kind==='goal')await confirmGoal(target);else if(kind==='pose')await confirmPose(target);}
@@ -302,8 +317,8 @@ async function confirmGoal(target){
   if(!nav.pose)throw new Error('还没有收到小车位置');
   const plan=goalPlan(nav.pose,target);
   if(plan.distance<0.1)throw new Error('目标离老三太近（不到 10 cm）');
-  const cell=cellKind(target.x,target.y);
-  const warning=cell==='wall'?'\n注意：目标点在障碍物上，很可能到不了。':cell==='free'?'':'\n注意：目标点在还没探索过的区域，可能规划不出路线。';
+  const cell=cellKind(target.x,target.y),wall=wallDistance(target.x,target.y);
+  const warning=cell==='wall'?'\n注意：目标点在障碍物上，很可能到不了。':cell!=='free'?'\n注意：目标点在还没探索过的区域，可能规划不出路线。':wall<WALL_WARN_M?'\n注意：目标离障碍只有约 '+Math.round(wall*100)+' cm。老三前方 30 cm 内有障碍时会停下，可能停在目标前面；最好选离墙 40 cm 以上的点。':'';
   const ok=await ask({title:'让老三开到这里？',confirm:'出发',text:'直线约 '+plan.distance.toFixed(1)+' 米，预计 '+plan.seconds+' 秒左右。老三会自己规划路线，遇到障碍会绕开或停下；随时可以点「取消导航」或「紧急停止」。\n请确认周围没有人、宠物和容易碰倒的东西。'+warning});
   if(!ok)return;
   await navCommand({op:'goal',x:fixed(target.x,3),y:fixed(target.y,3),yaw:fixed(target.yaw,4)});
@@ -428,7 +443,7 @@ function addLog(meta){
   const item=document.createElement('li');item.className='log '+logLevelClass(meta.level);item.dataset.key=key;item.dataset.level=meta.level;
   const time=document.createElement('time');time.textContent=logTime(meta.stamp);
   const node=document.createElement('b');node.textContent=String(meta.node||'');node.title=node.textContent;
-  const text=document.createElement('span');text.textContent=String(meta.text||'')+(meta.repeat>0?'（此前 30 秒内又出现 '+meta.repeat+' 次）':'');
+  const text=document.createElement('span');text.title=String(meta.text||'');text.textContent=logText(meta.text)+(meta.repeat>0?'（此前 30 秒内又出现 '+meta.repeat+' 次）':'');
   item.append(time,node,text);item.hidden=$('#log-level').value==='warn'&&logLevelClass(meta.level)==='info';
   const list=$('#log-list');list.append(item);
   while(list.children.length>LOG_MAX){logKeys.delete(list.firstElementChild.dataset.key);list.firstElementChild.remove();}
