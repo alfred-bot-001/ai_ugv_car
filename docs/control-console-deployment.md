@@ -420,3 +420,5 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **中继不变**：仍是按住的状态每 100 ms 发到 Mini，拖动 40 ms 节流；停止、租约、急停逻辑未动，Pi 代理无改动。
 - **验证**：门禁 364 项通过，覆盖率 83%；`node` 跑 5 个 `.mjs` 前端测试通过。本机 `CONSOLE_DEV_HTTP=1` 预览（设备离线）：桌面 1440 与手机 375 两页无横向溢出、无脚本错误；用脚本模拟按键，W+D 得 (0.71, 0.71)、← 得云台 (−1, 0)，松开后归零；文本域里按 W 不触发。实车按键驱动待用户在场时实测。
 - **回滚**：Mini 装回 `releases/` 里上一版主控台 wheel（0.10.0）并重启 launchd。
+- **部署（2026-10-23 10:27，main `2a0303c`，PR #6 合并后从主干顶端构建）**：部署前核对 Mini 线上为主控台 0.10.0 / Pi 代理 0.8.1，与合并前主干一致，没有别的分支在线上。Mini 装 `releases/0.11.0-ai_ugv_car-2a0303c/`（主控台 0.11.0 wheel、Pi 代理 0.8.1 wheel 原样未装、`uv.lock`），备份 `backups/20261023-pre-0.11.0/`（`tvpet_console/`、`console.sqlite3`），`launchctl bootout/bootstrap` 一次成功。Pi 无改动、未重启。核验：Mini 本机与公网 `/health` 均 `agent_online: true, mode: control`，公网 `keypad.js`、`app.js`、`navigation.js`、`style.css` 的 SHA-256 与源码一致，服务日志无报错。CI 上 `test_sso.py` 两项与 `pi-agent` 两项套接字权限测试在主干上早已失败（仓库既有问题，本机门禁全绿），与本次无关，待单独处理。
+- **回滚**：Mini 装回 `releases/0.10.0-ai_ugv_car-12fbf92/` 的主控台 wheel（或 `backups/20261023-pre-0.11.0/tvpet_console/`）后 `launchctl bootout/bootstrap`。
