@@ -504,3 +504,15 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **验证**：ruff、format、mypy；pytest 374 项通过，覆盖率 83%；`.mjs` 全过（新增离墙距离、日志翻译、会话判断用例）。main 上已有、与本次无关的失败：`pi-agent/tests/test_nav.py::test_navigation_keeps_the_tight_runaway_bound_and_the_joystick_restores_it`（干净的 main 上同样失败，来自 0a350d2）和时好时坏的 `test_adapters.py::test_uart_watchdog_and_evidence`。
 - **部署**：ugv-nav 源码备份 `backups/20261023-pre-0.5.3/src.tgz`，镜像 0.5.3（`build-0.5.3.log`），主机 `.venv` 0.5.3，`ugv-navd` 已重启。为不清掉建图中的地图，**没有重建正在运行的容器**（仍是 0.5.2 镜像）；新的到达范围、定位健康、会话标记和安全门日志在下一次「开始建图」或「加载并定位」时生效。Mini `releases/0.13.2-ai_ugv_car-644bb6e/`（主控台 0.13.2、Pi 代理 0.9.0），`/health` 正常，公网脚本已是新版。
 - **回滚**：Mini 装回 `releases/0.13.1-ai_ugv_car-eef4c5a/`；ugv-nav 主机 `.venv` 装回 0.5.2（解开 `backups/20261023-pre-0.5.3/src.tgz` 取 wheel），重启 `ugv-navd`，下次切换模式前把 compose 版本改回 0.5.2。
+
+## 2026-10-23 自动探索建图（ugv-nav 0.5.5 / Pi 0.9.1 / Mini 0.13.3，main `0cbe54f`）
+
+用户要求做完待办 6：建图时让老三自己把房间走一遍。设计见 [map-console-design.md](map-console-design.md) §6.1a。
+
+- **做法**：`ugv-navd` 新任务 `explore`，每段先在容器里跑 `ugv-ros-op frontier`，读 SLAM 当前地图和位姿，用 `ugv_nav_tools/frontiers.py` 找出能安全开到的前沿目标。然后像普通「去这里」一样走一段：单独的有限授权窗口、电量门槛，导航桥、安全门、卡住检测和定位健康照常。停止条件：没有目标、安全停车、取消、连续 3 段没到达、满 30 段或 20 分钟。Pi 代理的命令白名单加入 `explore`（0.9.1）；页面「建图」区新增「自动探索」按钮（只在建图时、有实时位置时可用，先弹确认框），任务行显示段数、已探索面积和用时，地图上用蓝色箭头标出当前目标。
+- **车上发现并修正（0.5.5）**：第一圈扫描留下的前沿是围着车的一整圈，中心就是车本身，目标没有朝向。改为长前沿按 1 m 见方切段；目标离未知区至少 0.20 m（规划器 `allow_unknown: false`），离墙 0.35 m（0.40 m 在拥挤的书房里几乎找不到目标）。新容器刚开始建图时实测得到 4 个朝向各异的目标。书房保存的地图在 Pi 上试跑（地图不离开车）：拥挤处离墙够远的空地很少，可能只有 1 个目标，此时结束提示「窄处请用遥控补图」。
+- **部署前保护**：重建容器前把当时的 SLAM 地图另存为 `autosave-20261023-1437`。
+- **部署**：ugv-nav 备份 `backups/20261023-pre-0.5.4/`、`backups/20261023-pre-0.5.5/`，构建日志 `build-0.5.4.log`、`build-0.5.5.log`，镜像 0.5.5、主机 `.venv` 0.5.5，`ugv-navd` 已重启。Pi 代理 `releases/0.9.1/` 装进两个环境，部署前先停容器。容器已用 0.5.5 重新进入建图模式，`ugv-navd` 启动自检一次通过。Mini `releases/0.13.3-ai_ugv_car-0cbe54f/`。核验：`/health` 正常，公网脚本含自动探索，Pi 代理对外 5 条连接，`arm.json` 关闭，全程未发运动指令。
+- **验证**：pytest 384 项通过（覆盖率 83%，main 上已知失败的那项 Pi 测试除外），新增前沿算法 8 项、探索任务 4 项测试；`.mjs` 全过；本机 Playwright 预览确认框、进度行和横幅。
+- **待实车验收（需用户在场、清场）**：在客厅等较空旷的地方从「开始建图」后点「自动探索」，观察每段目标是否合理、能否安全停下；完成后保存地图。
+- **回滚**：Mini 装回 `releases/0.13.2-ai_ugv_car-644bb6e/`；Pi 装回 `releases/0.9.0/`（两个环境）；ugv-nav 主机 `.venv` 装回 0.5.3，compose 版本改回 0.5.3 后重建容器。
