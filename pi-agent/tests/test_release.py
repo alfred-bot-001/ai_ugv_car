@@ -123,7 +123,7 @@ def test_persistent_qualification_checks_current_health_and_recovers(tmp_path: P
     for changes in (
         {"v": 0},
         {"L": RUNAWAY_SPEED + 0.01},
-        {"pan": 90},
+        {"pan": 180},
         {"tilt": float("nan")},
         {"pan": None},
     ):

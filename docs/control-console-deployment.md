@@ -457,3 +457,14 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **验证**：门禁 364 项通过、覆盖率 83%，ruff / format / mypy 干净；`node` 跑 5 个 `.mjs` 前端测试通过（`test_keypad_frontend.mjs` 仍断言总览页含 I/J/K/L `<kbd>` 提示）。本机 `CONSOLE_DEV_HTTP=1` 预览（设备离线）在 1720px 与 1000px 宽核对布局，控制台无报错。
 - **回滚**：Mini 装回 `releases/0.12.1-ai_ugv_car-0790c3b/` 的主控台 wheel（0.12.1）并 `launchctl bootout/bootstrap`。
 - **部署（2026-10-23 11:55，main `ca0b0c8`，PR #14 合并后从主干顶端构建，校验输出 ok）**：部署前核对 Mini 线上为主控台 0.12.1 / Pi 代理 0.8.1，安装包内 `dashboard.html`、`app.js`、`style.css` 指纹与 `0790c3b` 源码一致，Mini 本机 clone 停在 `0619f9f`、无 worktree，没有别的分支在线上。Mini 装 `releases/0.12.2-ai_ugv_car-ca0b0c8/`（主控台 0.12.2 wheel、`uv.lock`；wheel SHA-256 `7a855385…`），备份 `backups/20261023-pre-0.12.2/`（`tvpet_console/`、`console.sqlite3`）。`launchctl bootout/bootstrap` 一次成功。Pi 无改动、未重启。核验：`.venv` 内 0.12.2；Mini 本机与公网 `/health` 均 `agent_online: true, mode: control`；公网 `app.js`、`style.css` 与安装包内 `dashboard.html` 的 SHA-256 均等于主干源码，安装包页面已无 `gate-gimbal`、`#voice` 位于右栏；重启后日志无报错，Pi 的 video/audio/nav/front 四条 WebSocket 已重连。真机页面效果待用户在浏览器刷新后确认。
+
+## 2026-10-23 云台限位放宽到 ±170° / -30°～90° + 零位校准（Pi 0.8.2，未部署）
+
+用户反馈：官方云台几乎能转 360°，现在只有 90°，而且从正前方只能向右转。
+
+- **原因**：Pi 代理 `hardware.py` 的 `PAN_LIMIT = 45`、`TILT_MIN/MAX = -15/45` 是 2026-10-02 验收时的保守取值，网页圆盘的目标角度被夹在 ±45°，反馈超出 ±47° 还会被健康检查锁定。官方固件 ugv_base_ros `gimbal_module.h` 对 T133 的限制是 X ±180°、Y -30°～90°。只能向右转是因为水平舵机的零位（位置 2047）比相机正前方偏右约 45°：验收证据里云台静止读数一直在 -30°～-33°，相机朝前时读数已贴近 -45° 左边界。
+- **改动（用户 2026-10-23 批准）**：`PAN_LIMIT = 170`、`TILT_MIN, TILT_MAX = -30, 90`，注释写明日期、理由和固件上限；健康检查 2° 容差不变。`scripts/verify_motion.py` 的云台测试范围同步放宽。新增 `tvpet_pi/gimbal_center.py` 与命令 `tvpet-gimbal-center`：停轮、`T4 cmd 2` 开云台反馈、读一遍反馈、发 `{"T":502,"id":2}`（固件 `setMiddlePos` → `st.CalibrationOfs`，偏移写进舵机 EEPROM，断电保留）、再读反馈，`|pan| ≤ 2°` 即校准成功，输出 JSON。串口独占，必须先停代理。主控台和 ugv-nav 不变。
+- **校零步骤（用户在场）**：网页圆盘把相机转到正对车头 → `sudo systemctl stop ai-tv-pet-agent` → `/home/ws/deploy/ai-tv-pet-agent/.venv/bin/tvpet-gimbal-center --camera-facing-front` → 看输出 `centered: true` → `sudo systemctl start ai-tv-pet-agent`。俯仰同理加 `--axis tilt`（本次未要求）。
+- **部署前确认**：云台相机 USB 线在 -170° 和 +170° 两端都有余量（10 月 17 日相机反复掉线疑似线被扯）。线不够就把 `PAN_LIMIT` 收到线允许的角度再部署。
+- **验证**：新增单元测试覆盖限位夹取（169→170、-169→-170、89→90、-29→-30）、反馈越界判定、校准命令与舵机 ID、模拟串口下的命令顺序（零速 → T4 → T502）和无反馈拒绝。实车两端转动、校零后 0° 对正车头待用户在场实测。
+- **回滚**：Pi 装回 `releases/0.8.1/` 两个环境后重启服务；舵机零位如要还原，把相机转回原位再跑一次 `tvpet-gimbal-center`（没有「撤销」命令，EEPROM 只保存最后一次）。
