@@ -184,3 +184,24 @@ function mapOptionText(map){
   const when=(date.getMonth()+1)+'月'+date.getDate()+'日 '+p(date.getHours())+':'+p(date.getMinutes());
   return map.name+' · '+(Number.isFinite(map.area_m2)?map.area_m2.toFixed(1)+' m² · ':'')+when;
 }
+
+// ---- map context menu: why an item is unavailable ('' when it can be used)
+function navBusyText(navd){const job=navd&&navd.job;return job&&job.state==='running'?'「'+(NAV_OP_TEXT[job.op]||job.op)+'」还没完成':'';}
+function navReadyText(s){
+  if(!s.online)return '老三离线或地图数据未连接';
+  if(!s.navd||!s.navd.online)return '导航服务未连接';
+  if(!containerRunning(s.navd))return '导航容器没有运行';
+  return navBusyText(s.navd);
+}
+function poseBlocker(s){
+  const ready=navReadyText(s);if(ready)return ready;
+  if(s.navd.mode!=='localization')return '建图时不用设置位置';
+  if(!s.hasMap||!s.relay)return '地图还没加载好';
+  return '';
+}
+function goalBlocker(s){
+  const ready=navReadyText(s);if(ready)return ready;
+  if(!s.hasMap)return '还没有地图';
+  if(!s.poseFresh)return s.navd.mode==='localization'?'先把老三的位置设好':'还没有老三的实时位置';
+  return '';
+}

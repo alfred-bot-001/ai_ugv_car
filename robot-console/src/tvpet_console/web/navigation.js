@@ -13,12 +13,13 @@ const nav={map:null,mapImage:null,pose:null,trail:[],scan:[],plan:[],state:null,
 let view={cx:0,cy:0,scale:60,width:0,height:0},follow=true,fitPending=true,dirty=true,dpr=1;
 const layers={scan:true,trail:true,plan:true,grid:false};
 const logKeys=new Set();
-// Controls: the active map tool, a press-and-drag arrow, the target awaiting confirmation.
-let tool='view',arrow=null,pendingTarget=null,maps=[],mapsLoaded=false,mapsLoading=false;
+// Map actions: a right click (long press on touch) opens a menu at a map point; "set the
+// pose" then takes one more click for the heading. arrow is that heading being chosen.
+let tool='view',arrow=null,pendingTarget=null,menuPoint=null,longPress=null,maps=[],mapsLoaded=false,mapsLoading=false;
 let jobSeen=false,lastJobKey='',overwriteName='',dialogPending=null;
 // Wheel and gimbal joysticks (same held-state relay as the dashboard: the knobs stay put).
 let controlSocket=null,press={wheels:null,gimbal:null},dragging=null,pressGeneration=0,controlSequence=0,lease='',leasing=null,streamTimer=null,lastSend=0;
-const TOOL_HINT={view:'拖动平移，滚轮或双指缩放',pose:'在地图上按住老三所在的位置，朝车头方向拖出箭头再松开',goal:'在地图上按住目标点，拖出到达后的朝向再松开（直接点一下也可以）'};
+const TOOL_HINT={view:'右键地图（手机长按）：去这里、把老三的位置设在这里 · 拖动平移，滚轮或双指缩放',heading:'朝老三车头的方向点一下，确定朝向（Esc 或右键取消）'};
 
 function toast(message){$('#toast').textContent=message;$('#toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').hidden=true,6000);}
 async function api(path,body={}){
@@ -94,11 +95,17 @@ function drawTarget(p,color){
   context.beginPath();context.moveTo(ex,ey);context.lineTo(ex-head*Math.cos(p.yaw-spread),ey+head*Math.sin(p.yaw-spread));context.lineTo(ex-head*Math.cos(p.yaw+spread),ey+head*Math.sin(p.yaw+spread));context.closePath();context.fill();
 }
 function activeGoal(){const job=nav.agent?.navd?.job;return job&&job.op==='goal'&&job.state==='running'&&job.detail&&Number.isFinite(job.detail.x)?job.detail:null;}
-// Without a drag: a goal faces away from the car, a pose keeps the current heading.
-function fallbackYaw(x,y){
+// Without a chosen heading: a goal faces away from the car, a pose keeps the current one.
+function fallbackYaw(x,y,kind){
   const pose=nav.pose;if(!pose)return 0;
-  if(tool==='goal'&&Math.hypot(x-pose.x,y-pose.y)>0.05)return Math.atan2(y-pose.y,x-pose.x);
+  if(kind==='goal'&&Math.hypot(x-pose.x,y-pose.y)>0.05)return Math.atan2(y-pose.y,x-pose.x);
   return pose.yaw;
+}
+function headingTarget(a){return arrowPose(a.x0,a.y0,a.x1,a.y1,fallbackYaw(a.x0,a.y0,'pose'),12/view.scale);}
+// Where the menu was opened: a small orange ring and cross.
+function drawMark(p){
+  const [sx,sy]=worldToScreen(view,p.x,p.y);context.strokeStyle='#d9822b';context.lineWidth=2;
+  context.beginPath();context.arc(sx,sy,7,0,Math.PI*2);context.moveTo(sx-11,sy);context.lineTo(sx+11,sy);context.moveTo(sx,sy-11);context.lineTo(sx,sy+11);context.stroke();
 }
 function draw(){
   requestAnimationFrame(draw);resize();
@@ -113,7 +120,8 @@ function draw(){
   if(layers.scan&&nav.scan.length){context.fillStyle='#e0533d';const size=Math.max(2,Math.min(4,0.03*view.scale));for(const [x,y] of nav.scan){const [sx,sy]=worldToScreen(view,x,y);context.fillRect(sx-size/2,sy-size/2,size,size);}}
   const goal=activeGoal();if(goal)drawTarget(goal,'#2a7de1');
   if(pendingTarget)drawTarget(pendingTarget,pendingTarget.tool==='pose'?'#16705b':'#d9822b');
-  if(arrow)drawTarget(arrowPose(arrow.x0,arrow.y0,arrow.x1,arrow.y1,fallbackYaw(arrow.x0,arrow.y0),12/view.scale),tool==='pose'?'#16705b':'#d9822b');
+  if(arrow)drawTarget(headingTarget(arrow),'#16705b');
+  if(menuPoint)drawMark(menuPoint);
   if(nav.pose)drawRobot(nav.pose,stale);
   const meters=scaleBar(view.scale);$('#map-scale i').style.width=Math.round(meters*view.scale)+'px';$('#map-scale b').textContent=meters>=1?meters+' m':Math.round(meters*100)+' cm';
 }
@@ -121,20 +129,32 @@ function setFollow(value){follow=value;$('#follow').setAttribute('aria-pressed',
 const pointers=new Map();let pinch=null;
 stage.addEventListener('wheel',e=>{e.preventDefault();const rect=stage.getBoundingClientRect();view=zoomAt(view,e.clientX-rect.left,e.clientY-rect.top,Math.exp(-e.deltaY*0.0015));if(follow&&nav.pose)setFollow(false);dirty=true;},{passive:false});
 function stagePoint(e){const rect=stage.getBoundingClientRect();return screenToWorld(view,e.clientX-rect.left,e.clientY-rect.top);}
+function cancelLongPress(){if(longPress){clearTimeout(longPress.timer);longPress=null;}}
 stage.addEventListener('pointerdown',e=>{
+  if(e.target.closest('#map-menu'))return;
+  closeMenu();
   stage.setPointerCapture(e.pointerId);pointers.set(e.pointerId,[e.clientX,e.clientY]);
-  if(pointers.size===2){arrow=null;dirty=true;const [a,b]=[...pointers.values()];pinch={distance:Math.hypot(a[0]-b[0],a[1]-b[1])};}
-  else if(tool!=='view'&&pointers.size===1&&e.button===0){const [x,y]=stagePoint(e);arrow={id:e.pointerId,x0:x,y0:y,x1:x,y1:y};dirty=true;}
+  if(pointers.size===2){cancelLongPress();const [a,b]=[...pointers.values()];pinch={distance:Math.hypot(a[0]-b[0],a[1]-b[1])};return;}
+  if(tool==='heading'){if(e.button===0&&arrow){[arrow.x1,arrow.y1]=stagePoint(e);arrow.id=e.pointerId;dirty=true;}return;}
+  if(e.pointerType==='touch'){const x=e.clientX,y=e.clientY;cancelLongPress();longPress={id:e.pointerId,x,y,timer:setTimeout(()=>{longPress=null;pointers.clear();pinch=null;openMenu(x,y);},550)};}
 });
 stage.addEventListener('pointermove',e=>{
+  if(tool==='heading'&&arrow&&(e.pointerType==='mouse'||arrow.id===e.pointerId)){[arrow.x1,arrow.y1]=stagePoint(e);dirty=true;}
   const previous=pointers.get(e.pointerId);if(!previous)return;pointers.set(e.pointerId,[e.clientX,e.clientY]);
-  if(arrow&&arrow.id===e.pointerId){[arrow.x1,arrow.y1]=stagePoint(e);dirty=true;return;}
+  if(longPress&&longPress.id===e.pointerId&&Math.hypot(e.clientX-longPress.x,e.clientY-longPress.y)>10)cancelLongPress();
+  if(tool==='heading')return;
   if(pointers.size===1){const dx=e.clientX-previous[0],dy=e.clientY-previous[1];if(Math.abs(dx)+Math.abs(dy)<1)return;setFollow(false);view={...view,cx:view.cx-dx/view.scale,cy:view.cy+dy/view.scale};dirty=true;}
   else if(pointers.size===2&&pinch){const [a,b]=[...pointers.values()],distance=Math.hypot(a[0]-b[0],a[1]-b[1]),rect=stage.getBoundingClientRect();if(distance>0&&pinch.distance>0){view=zoomAt(view,(a[0]+b[0])/2-rect.left,(a[1]+b[1])/2-rect.top,distance/pinch.distance);pinch.distance=distance;dirty=true;}}
 });
 for(const kind of ['pointerup','pointercancel','lostpointercapture'])stage.addEventListener(kind,e=>{
-  pointers.delete(e.pointerId);if(pointers.size<2)pinch=null;
-  if(arrow&&arrow.id===e.pointerId){const done=arrow;arrow=null;dirty=true;if(kind==='pointerup')finishArrow(done);}
+  const had=pointers.delete(e.pointerId);if(pointers.size<2)pinch=null;
+  if(longPress&&longPress.id===e.pointerId)cancelLongPress();
+  if(tool==='heading'&&kind==='pointerup'&&had&&arrow&&arrow.id===e.pointerId)finishHeading();
+});
+stage.addEventListener('contextmenu',e=>{
+  e.preventDefault();cancelLongPress();
+  if(tool==='heading'){setTool('view');return;}
+  openMenu(e.clientX,e.clientY);
 });
 stage.addEventListener('dblclick',e=>{if(tool!=='view')return;const rect=stage.getBoundingClientRect();view=zoomAt(view,e.clientX-rect.left,e.clientY-rect.top,1.6);dirty=true;});
 $('#zoom-in').onclick=()=>{view=zoomAt(view,view.width/2,view.height/2,1.4);dirty=true;};
@@ -166,7 +186,8 @@ function renderFacts(){
   if(!lastStatus.online){banner.className='notice';banner.textContent='老三尚未连接或数据已过期，地图暂停更新。';}
   else if(!navSocket){banner.className='notice';banner.textContent='正在连接地图数据…';}
   else if(agent&&!agent.relay){banner.className='notice';banner.textContent=/^(running|starting)/.test(String(agent.navd?.container||''))?'导航容器正在启动，大约 30 秒后出现地图…':'导航容器没有运行。点右侧「开始建图」，或选一张已保存的地图「加载并定位」。';}
-  else if(fault){banner.className='notice';banner.textContent=fault+'。需要重新授权后才能再动。';}
+  else if(state?.mode==='localization'&&!(poseAge<POSE_STALE_S)){banner.className='notice';banner.textContent='还不知道老三在这张图上的位置：在地图上右键（手机长按）老三所在的地方，选「把老三的位置设在这里」，再点一下车头朝向。';}
+  else if(fault){banner.className='notice';const age=formatAge(ageOf(agent.fault.at));banner.textContent=fault+(age==='—'?'':'（'+age+'）')+'。下次出发时自动解除。';}
   else if(stale){banner.className='notice';banner.textContent='位姿数据中断，地图上显示的是最后已知位置。';}
   else if(activeGoal()){banner.className='notice good';banner.textContent='老三正在自主导航去目标点（蓝色箭头）· 随时可点「取消导航」或「紧急停止」。';}
   else{banner.className='notice good';banner.textContent=(state?.mode==='mapping'?'建图中':'定位导航中')+' · 地图、激光和位置实时更新。';}
@@ -183,14 +204,13 @@ function renderControls(){
   const badge=$('#container-badge');badge.textContent=!navdUp?'不可用':busy?'任务进行中':running?'可以操作':'未运行';badge.className='badge '+(navdUp&&running&&!busy?'':navdUp?'neutral':'warning');
   const line=$('#ctl-job');line.textContent=!lastStatus.online?'老三离线':!navdUp?(navd?.error||'等待导航服务'):jobText(job,piNow());
   line.className='job-line'+(busy?' running':!navdUp||job?.state==='failed'?' fault':job?.state==='ok'?' good':'');
-  const ready=navdUp&&!busy,mapping=running&&navd.mode==='mapping',localized=running&&navd.mode==='localization';
-  const fresh=!!nav.pose&&ageOf(nav.pose.stamp)<POSE_STALE_S;
+  const ready=navdUp&&!busy,mapping=running&&navd.mode==='mapping';
   $('#start-mapping').disabled=!ready;
   $('#save-map').disabled=!(ready&&mapping&&nav.map&&agent.relay);
   $('#localize').disabled=!(ready&&$('#map-select').value);
-  const can={view:true,pose:ready&&localized&&!!nav.map&&!!agent.relay,goal:ready&&running&&!!nav.map&&fresh};
-  for(const button of document.querySelectorAll('button[data-tool]'))button.disabled=!can[button.dataset.tool];
-  if(!can[tool])setTool('view');
+  const menu=menuState();
+  if(tool==='heading'&&poseBlocker(menu))setTool('view');
+  if(!$('#map-menu').hidden){setItem('goal',goalBlocker(menu));setItem('pose',poseBlocker(menu));}
   $('#cancel-nav').disabled=!lastStatus.online;
   if(navdUp){
     const key=job?job.id+':'+job.state:'';
@@ -206,15 +226,37 @@ function renderControls(){
   $('#reset-estop').hidden=!board.estopped;
 }
 function setTool(name){
-  if(name===tool&&!arrow)return;
-  tool=name;arrow=null;stage.dataset.tool=name;
-  for(const button of document.querySelectorAll('button[data-tool]'))button.setAttribute('aria-pressed',String(button.dataset.tool===name));
+  tool=name;if(name==='view')arrow=null;stage.dataset.tool=name;
   const hint=$('#tool-hint');hint.textContent=TOOL_HINT[name];hint.classList.toggle('active',name!=='view');
   if(name!=='view'&&follow)setFollow(false);
   dirty=true;
 }
-for(const button of document.querySelectorAll('button[data-tool]'))button.onclick=()=>setTool(button.dataset.tool===tool?'view':button.dataset.tool);
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&tool!=='view'&&!$('#nav-dialog').open)setTool('view');});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#nav-dialog').open){closeMenu();if(tool!=='view')setTool('view');}});
+
+// ---- map context menu
+function menuState(){const agent=nav.agent;return {online:!!lastStatus.online&&!!navSocket&&!!agent,navd:agent?.navd,relay:!!agent?.relay,hasMap:!!nav.map,poseFresh:!!nav.pose&&ageOf(nav.pose.stamp)<POSE_STALE_S};}
+const MENU_HINT={goal:'老三自己规划路线开过去',pose:'选好后再点一下车头朝向'};
+function setItem(action,reason){const item=$('#map-menu [data-action='+action+']');item.disabled=!!reason;item.querySelector('small').textContent=reason||MENU_HINT[action];}
+function openMenu(clientX,clientY){
+  const rect=stage.getBoundingClientRect(),sx=clientX-rect.left,sy=clientY-rect.top,[x,y]=screenToWorld(view,sx,sy);
+  menuPoint={x,y};const menu=$('#map-menu'),state=menuState();
+  setItem('goal',goalBlocker(state));setItem('pose',poseBlocker(state));
+  menu.hidden=false;
+  menu.style.left=Math.max(8,Math.min(sx,view.width-menu.offsetWidth-8))+'px';
+  menu.style.top=Math.max(8,Math.min(sy,view.height-menu.offsetHeight-8))+'px';
+  menu.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
+  dirty=true;
+}
+function closeMenu(){const menu=$('#map-menu');if(menu.hidden)return;menu.hidden=true;menuPoint=null;dirty=true;}
+$('#map-menu').addEventListener('click',e=>{
+  const item=e.target.closest('button[data-action]');if(!item||item.disabled||!menuPoint)return;
+  const p=menuPoint;closeMenu();
+  if(item.dataset.action==='goal')runTarget('goal',{x:p.x,y:p.y,yaw:fallbackYaw(p.x,p.y,'goal')});
+  else{setTool('heading');arrow={id:null,x0:p.x,y0:p.y,x1:p.x,y1:p.y};dirty=true;}
+});
+$('#map-menu').addEventListener('contextmenu',e=>e.preventDefault());
+document.addEventListener('pointerdown',e=>{if(!e.target.closest('#map-menu')&&!stage.contains(e.target))closeMenu();});
+window.addEventListener('blur',closeMenu);
 
 // A modal question; resolves to true / the typed text, or null when cancelled.
 function ask({title,text,confirm='确认',danger=false,input=null,validate=null}){
@@ -249,8 +291,8 @@ function cellKind(x,y){
   const pixel=nav.mapImage.getContext('2d',{willReadFrequently:true}).getImageData(cell[0],cell[1],1,1).data;
   return pixel[3]===0?'unknown':pixel[0]<128?'wall':'free';
 }
-async function finishArrow(done){
-  const kind=tool,target=arrowPose(done.x0,done.y0,done.x1,done.y1,fallbackYaw(done.x0,done.y0),12/view.scale);
+function finishHeading(){const target=headingTarget(arrow);setTool('view');runTarget('pose',target);}
+async function runTarget(kind,target){
   pendingTarget={...target,tool:kind};dirty=true;
   try{if(kind==='goal')await confirmGoal(target);else if(kind==='pose')await confirmPose(target);}
   catch(error){toast(error.message);}
@@ -289,7 +331,7 @@ $('#save-map').onclick=()=>guarded($('#save-map'),async()=>{
 });
 $('#localize').onclick=()=>guarded($('#localize'),async()=>{
   const name=$('#map-select').value;if(!name)return;
-  const ok=await ask({title:'加载地图「'+name+'」？',confirm:'加载地图',text:'导航容器会重启并加载这张地图（大约 30 秒），正在建的地图如果没保存会丢失。\n加载后用地图下方的「设置位置」标出老三现在的位置和朝向。'});
+  const ok=await ask({title:'加载地图「'+name+'」？',confirm:'加载地图',text:'导航容器会重启并加载这张地图（大约 30 秒），正在建的地图如果没保存会丢失。\n加载后在地图上右键（手机长按）老三所在的地方，选「把老三的位置设在这里」，再点一下车头朝向。'});
   if(!ok)return;
   await navCommand({op:'localize',map:name});resetMap();toast('正在加载地图 '+name);
 });
