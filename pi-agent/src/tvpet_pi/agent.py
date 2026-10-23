@@ -287,7 +287,7 @@ class AgentRuntime:
             job = (self.navd_status or {}).get("job") or {}
             if self.nav and (self.nav.owned or job.get("state") == "running"):
                 self.nav.halt("operator_cancel")
-        if command.op not in ("status", "maps", "preview") and self.nav_stream:
+        if command.op not in ("status", "maps", "preview", "route", "reports") and self.nav_stream:
             self.nav_stream.log("INFO", "网页操作：" + command.describe())
         try:
             return await asyncio.to_thread(self.navd.request, command.payload())

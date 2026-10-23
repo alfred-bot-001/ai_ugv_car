@@ -37,6 +37,7 @@ from . import map_admin
 from .board_client import BoardError
 from .map_files import FREE_PIXEL, read_map_yaml, read_pgm
 from .navctl import (
+    BATTERY_CRITICAL_V,
     BATTERY_LEG_V,
     BATTERY_START_V,
     MAP_NAME,
@@ -46,7 +47,7 @@ from .navctl import (
     Settings,
     map_name,
 )
-from .route import Pose, wrap
+from .route import Pose, Route, parse_route, wrap
 
 LOGGER = logging.getLogger("ugv-navd")
 SOCKET = Path("/home/ws/deploy/ugv-nav/run/ops.sock")
@@ -64,7 +65,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 ACTIVE = re.compile(r"\[lifecycle_manager_(\w+)\]: Managed nodes are active")
 MAX_MAPS = 100
 # Saved-map housekeeping, answered at once (file work only, never while a job runs).
-MAP_ADMIN = ("preview", "rename", "delete", "default")
+MAP_ADMIN = ("preview", "rename", "delete", "default", "route", "route_save", "reports")
 OPS: tuple[str, ...] = (
     "status",
     "maps",
@@ -74,6 +75,7 @@ OPS: tuple[str, ...] = (
     "pose",
     "goal",
     "explore",
+    "patrol",
     "stop",
 ) + MAP_ADMIN
 # Exploration (map page "自动探索"): frontier legs, each one ordinary goal with its own
@@ -91,6 +93,8 @@ FIELDS = {
     "delete": {"map"},
     "default": {"map"},
     "rename": {"map", "to"},
+    "route": {"map"},
+    "route_save": {"map", "route"},
 }
 # pi-agent's safety stop reasons (tvpet_pi.nav), as the map page shows them.
 FAULT_TEXT = {
@@ -107,6 +111,7 @@ OP_TEXT = {
     "pose": "设置当前位置",
     "goal": "导航去目标点",
     "explore": "自动探索",
+    "patrol": "巡航",
 }
 
 
@@ -116,6 +121,7 @@ class Request:
     map: str = ""
     pose: Pose | None = None
     to: str = ""
+    route: Route | None = None
 
 
 def number(raw: dict[str, Any], key: str, limit: float) -> float:
@@ -137,11 +143,19 @@ def parse_request(raw: Any) -> Request:
     extra = set(raw) - {"op"} - FIELDS.get(op, set())
     if extra:
         raise ValueError("unexpected fields: " + ", ".join(sorted(extra)))
+    if op == "reports":
+        return Request(op)
     if op in ("save", "localize") or op in MAP_ADMIN:
         name, to = raw.get("map"), raw.get("to", "")
         if not isinstance(name, str) or not isinstance(to, str):
             raise ValueError("map name required")
-        return Request(op, map=map_name(name), to=map_name(to) if op == "rename" else "")
+        route = None
+        if op == "route_save":
+            route = parse_route(raw.get("route"))
+            if any(abs(p.x) > COORD_LIMIT or abs(p.y) > COORD_LIMIT for p in route.waypoints):
+                raise ValueError("waypoint out of range")
+        to = map_name(to) if op == "rename" else ""
+        return Request(op, map=map_name(name), to=to, route=route)
     if op in ("pose", "goal"):
         x, y = number(raw, "x", COORD_LIMIT), number(raw, "y", COORD_LIMIT)
         yaw = wrap(number(raw, "yaw", 2 * math.pi))
@@ -375,6 +389,8 @@ class Navd:
             return "ok", message, {"map": request.map}
         if request.op == "explore":
             return self.explore()
+        if request.op == "patrol":
+            return self.patrol()
         if request.op == "save":
             ctl.save(request.map)
             return "ok", f"地图已保存为 {request.map}", {"map": request.map}
@@ -397,9 +413,18 @@ class Navd:
         if request.op == "preview":
             meta, png = map_admin.preview(maps, request.map)
             return {"meta": meta, "png": base64.b64encode(png).decode()}
+        if request.op == "route":
+            return {"route": map_admin.read_route(maps, request.map)}
+        if request.op == "reports":
+            return {"reports": map_admin.list_reports(self.ctl.settings.reports)}
         with self.lock:
             if self.job and self.job.state == "running":
                 raise ValueError(f"「{OP_TEXT[self.job.op]}」还没完成，请稍候")
+        if request.op == "route_save":
+            assert request.route is not None
+            map_admin.save_route(maps, request.map, request.route)
+            LOGGER.info("route for %s: %d points", request.map, len(request.route.waypoints))
+            return {"saved": len(request.route.waypoints)}
         if request.op == "default":
             map_admin.set_default(maps, request.map)
             LOGGER.info("default map %s", request.map)
@@ -418,6 +443,13 @@ class Navd:
         LOGGER.info("map %s moved to %s", request.map, folder)
         return {"trash": folder.name}
 
+    def mode(self) -> dict[str, Any]:
+        """The launch the compose .env selects; no file yet means odometry only."""
+        try:
+            return env_mode((self.ctl.settings.compose_dir / ".env").read_text())
+        except OSError:
+            return {"mode": "odometry", "map": None}
+
     def progress(self, result: dict[str, Any]) -> None:
         with self.lock:
             if self.current is not None:
@@ -426,7 +458,7 @@ class Navd:
     def explore(self) -> tuple[str, str, dict[str, Any]]:
         """Drive to frontier after frontier while mapping (see EXPLORE_* above)."""
         ctl = self.ctl
-        if env_mode((ctl.settings.compose_dir / ".env").read_text())["mode"] != "mapping":
+        if self.mode()["mode"] != "mapping":
             raise ValueError("自动探索只能在建图时进行；先点「开始建图」")
         started = self.monotonic()
         failures, avoid = 0, list[tuple[float, float]]()
@@ -472,6 +504,89 @@ class Navd:
                     message = f"连续 {failures} 段没到达，探索中止"
                     return "failed", message, summary | {"target": None}
             self.progress(summary)
+
+    def patrol(self) -> tuple[str, str, dict[str, Any]]:
+        """Run the localized map's saved route leg by leg, then write a report."""
+        ctl = self.ctl
+        mode = self.mode()
+        if mode["mode"] != "localization" or not mode["map"]:
+            raise ValueError("巡航要在已保存的地图上进行；先「加载并定位」")
+        stored = map_admin.read_route(ctl.settings.maps, mode["map"])
+        if stored is None:
+            raise ValueError("这张地图还没有巡航路线；先在地图上加巡航点并保存")
+        route = parse_route(stored)
+        plan = route.legs()
+        progress: dict[str, Any] = {
+            "loops": route.loops,
+            "points": len(route.waypoints),
+            "total": len(plan),
+            "done": 0,
+            "reached": 0,
+            "loop": 0,
+            "index": 0,
+            "target": None,
+        }
+        legs: list[dict[str, Any]] = []
+        abort = ""
+        for loop, index, pose in plan:
+            if self.cancel_event.is_set():
+                abort = "cancelled"
+                break
+            target = {"x": pose.x, "y": pose.y, "yaw": pose.yaw}
+            progress |= {"loop": loop, "index": index, "target": target}
+            self.progress(progress)
+            gate = BATTERY_START_V if not legs else BATTERY_LEG_V
+            try:
+                result = ctl.goal(pose, battery_gate=gate)
+            except Cancelled:
+                abort = "cancelled"
+                break
+            except BatteryLow as low:
+                result = {"ok": False, "error": str(low), "battery_v": round(low.volts, 2)}
+                abort = "battery"
+                home = None if low.critical or not legs else ctl.home_pose()
+                if home is not None and not self.cancel_event.is_set():
+                    try:
+                        result["home"] = goal_summary(
+                            ctl.goal(home, battery_gate=BATTERY_CRITICAL_V)
+                        )[0]
+                    except (RuntimeError, BoardError, ValueError) as error:
+                        result["home"] = {"ok": False, "error": str(error)}
+            except (RuntimeError, BoardError, ValueError) as error:
+                result = {"ok": False, "error": str(error)[:200]}
+            leg = goal_summary(result)[0] | {"loop": loop, "index": index}
+            leg |= {k: result[k] for k in ("battery_v", "home") if k in result}
+            legs.append(leg)
+            progress["done"] += 1
+            progress["reached"] += bool(leg.get("ok"))
+            if not leg.get("ok"):
+                if self.cancel_event.is_set():
+                    abort = "cancelled"
+                abort = abort or str(leg.get("fault") or "failed")
+                break
+            self.progress(progress)
+        summary = {
+            "ok": len(legs) == len(plan) and all(leg.get("ok") for leg in legs),
+            "map": mode["map"],
+            "completed_legs": progress["reached"],
+            "planned_legs": len(plan),
+            "abort_reason": abort or None,
+            "legs": legs,
+        }
+        ctl.settings.reports.mkdir(mode=0o700, parents=True, exist_ok=True)
+        name = f"patrol-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        (ctl.settings.reports / name).write_text(json.dumps(summary, ensure_ascii=False, indent=1))
+        result = progress | {"target": None, "report": name}
+        done = f"（{progress['reached']}/{len(plan)} 段）"
+        if summary["ok"]:
+            return "ok", f"巡航完成：{len(plan)} 段全部到达", result
+        if abort == "cancelled":
+            return "cancelled", "已取消巡航" + done, result
+        if abort == "battery":
+            return "failed", "电量低，巡航停止" + done, result
+        where = f"第 {progress['loop']} 圈第 {progress['index']} 点"
+        reason = FAULT_TEXT.get(abort, "没到达")
+        return "failed", f"巡航中止：{where}{reason}" + done, result
 
     def switch_mode(self, *, mapping: bool, name: str | None = None) -> str:
         """Recreate the container and wait for its lifecycle managers; one retry."""

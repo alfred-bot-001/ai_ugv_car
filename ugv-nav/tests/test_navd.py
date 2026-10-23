@@ -458,3 +458,80 @@ def test_map_admin_requests(tmp_path: Path) -> None:
     ):
         with pytest.raises(ValueError):
             navd.handle(bad)
+
+
+ROUTE = {"loops": 2, "waypoints": [{"x": 1, "y": 0, "yaw": 0}, {"x": 0, "y": 1}]}
+
+
+def test_routes_are_saved_per_map_and_checked(tmp_path: Path) -> None:
+    navd, _, _ = make_navd(tmp_path)
+    write_map(navd.ctl.settings.maps, "room")
+    assert navd.handle({"op": "route", "map": "room"}) == {"ok": True, "route": None}
+    assert navd.handle({"op": "route_save", "map": "room", "route": ROUTE})["saved"] == 2
+    stored = navd.handle({"op": "route", "map": "room"})["route"]
+    assert stored["map"] == "room" and stored["loops"] == 2
+    assert stored["waypoints"][1] == {"x": 0.0, "y": 1.0, "yaw": 0.0}
+    for bad in (
+        {"op": "route_save", "map": "room", "route": {"waypoints": []}},
+        {"op": "route_save", "map": "room", "route": {**ROUTE, "loops": 11}},
+        {"op": "route_save", "map": "room", "route": {"waypoints": [{"x": 500, "y": 0}]}},
+        {"op": "route_save", "map": "missing", "route": ROUTE},
+    ):
+        with pytest.raises(ValueError):
+            navd.handle(bad)
+    navd.handle({"op": "rename", "map": "room", "to": "hall"})
+    assert navd.handle({"op": "route", "map": "hall"})["route"]["map"] == "hall"
+
+
+def test_patrol_runs_the_saved_route_and_writes_a_report(tmp_path: Path) -> None:
+    navd, run, deferred = make_navd(tmp_path, {"navigate": [{"ok": True}] * 4})
+    write_map(navd.ctl.settings.maps, "room")
+    navd.handle({"op": "patrol"})
+    deferred.run_all()
+    assert navd.job is not None and "已保存的地图上" in navd.job.message
+    localized(navd)
+    navd.handle({"op": "patrol"})
+    deferred.run_all()
+    assert navd.job.state == "failed" and "还没有巡航路线" in navd.job.message
+    navd.handle({"op": "route_save", "map": "room", "route": ROUTE})
+    navd.handle({"op": "patrol"})
+    deferred.run_all()
+    assert navd.job.state == "ok" and navd.job.message == "巡航完成：4 段全部到达"
+    assert navd.job.result["reached"] == 4 and navd.job.result["target"] is None
+    assert run.armed_during_navigate == [True] * 4
+    reports = navd.handle({"op": "reports"})["reports"]
+    assert reports[0]["ok"] and reports[0]["completed_legs"] == 4 and reports[0]["map"] == "room"
+
+
+def test_patrol_stops_at_a_failed_leg_or_low_battery(tmp_path: Path) -> None:
+    stall = {"ok": False, "fault": {"reason": "stall_body"}, "error_m": 0.3}
+    navd, _, deferred = make_navd(tmp_path, {"navigate": [{"ok": True}, stall]})
+    write_map(navd.ctl.settings.maps, "room")
+    localized(navd)
+    navd.handle({"op": "route_save", "map": "room", "route": ROUTE})
+    navd.handle({"op": "patrol"})
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "failed"
+    assert navd.job.message == "巡航中止：第 1 圈第 2 点车轮在转但车没动（1/4 段）"
+    report = navd.handle({"op": "reports"})["reports"][0]
+    assert report["abort_reason"] == "stall_body" and report["completed_legs"] == 1
+    (tmp_path / "low").mkdir()
+    low, _, deferred = make_navd(tmp_path / "low", volts=9.8)
+    write_map(low.ctl.settings.maps, "room")
+    localized(low)
+    low.handle({"op": "route_save", "map": "room", "route": ROUTE})
+    low.handle({"op": "patrol"})
+    deferred.run_all()
+    assert low.job is not None and low.job.message == "电量低，巡航停止（0/4 段）"
+
+
+def test_patrol_can_be_cancelled(tmp_path: Path) -> None:
+    navd, run, deferred = make_navd(tmp_path, {"navigate": [{"ok": True}] * 4})
+    write_map(navd.ctl.settings.maps, "room")
+    localized(navd)
+    navd.handle({"op": "route_save", "map": "room", "route": ROUTE})
+    navd.handle({"op": "patrol"})
+    navd.handle({"op": "stop"})
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "cancelled"
+    assert navd.job.message.startswith("已取消巡航") and run.armed_during_navigate == []

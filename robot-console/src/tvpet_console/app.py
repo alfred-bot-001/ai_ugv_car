@@ -500,7 +500,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def nav_command(request: Request, body: NavCommand) -> dict[str, Any]:
         """Map page controls; the car's ugv-navd runs them and holds any motion window."""
         await identity(request, mutate=True)
-        if body.op in ("status", "maps", "preview"):
+        if body.op in ("status", "maps", "preview", "route", "reports"):
             raise HTTPException(404, "未知导航操作")
         result = await rpc("nav", body.payload(), timeout=4, event=f"nav.{body.op}")
         return dict(result.get("nav") or {})
@@ -518,6 +518,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "maps": maps if isinstance(maps, list) else [],
             "default": default if isinstance(default, str) else None,
         }
+
+    async def nav_read(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = await gateway.rpc("nav", args, timeout=4)
+        except (ValueError, TimeoutError) as error:
+            raise HTTPException(409, str(error) or "读取超时") from error
+        return dict(result.get("nav") or {})
+
+    @app.get("/api/v1/nav/routes/{name}")
+    async def nav_route(request: Request, name: str) -> dict[str, Any]:
+        await identity(request)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+            raise HTTPException(404, "没有这张地图")
+        route = (await nav_read({"op": "route", "map": name})).get("route")
+        return {"route": route if isinstance(route, dict) else None}
+
+    @app.get("/api/v1/nav/reports")
+    async def nav_reports(request: Request) -> dict[str, Any]:
+        await identity(request)
+        reports = (await nav_read({"op": "reports"})).get("reports")
+        return {"reports": reports if isinstance(reports, list) else []}
 
     @app.get("/api/v1/nav/maps/{name}/preview.png")
     async def nav_map_preview(request: Request, name: str) -> Response:

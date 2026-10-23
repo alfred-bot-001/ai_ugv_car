@@ -17,6 +17,8 @@ const logKeys=new Set();
 // pose" then takes one more click for the heading. arrow is that heading being chosen.
 let tool='view',arrow=null,pendingTarget=null,menuPoint=null,longPress=null,maps=[],defaultMap=null,mapsLoaded=false,mapsLoading=false;
 let rotationFor='';
+// The patrol route being edited (for the localized map) and the recent reports.
+let route={map:null,loops:1,waypoints:[]},routeDirty=false,routeLoading=false,reports=[];
 let jobSeen=false,lastJobKey='',overwriteName='',dialogPending=null;
 // Wheel and gimbal joysticks (same held-state relay as the dashboard: the knobs stay put).
 let controlSocket=null,press={wheels:null,gimbal:null},dragging=null,pressGeneration=0,controlSequence=0,lease='',leasing=null,streamTimer=null,lastSend=0;
@@ -104,7 +106,7 @@ function drawTarget(target,color){
 }
 function activeGoal(){
   const job=nav.agent?.navd?.job;if(!job||job.state!=='running')return null;
-  const target=job.op==='goal'?job.detail:job.op==='explore'?job.result?.target:null;
+  const target=job.op==='goal'?job.detail:job.op==='explore'||job.op==='patrol'?job.result?.target:null;
   return target&&Number.isFinite(target.x)?target:null;
 }
 // Without a chosen heading: a goal faces away from the car, a pose keeps the current one.
@@ -139,6 +141,7 @@ function draw(){
   if(pendingTarget)drawTarget(pendingTarget,pendingTarget.tool==='pose'?'#16705b':'#d9822b');
   if(arrow)drawTarget(headingTarget(arrow),'#16705b');
   if(menuPoint)drawMark(menuPoint);
+  drawRoute();
   if(nav.pose)drawRobot(nav.pose,stale);
   const meters=scaleBar(view.scale);$('#map-scale i').style.width=Math.round(meters*view.scale)+'px';$('#map-scale b').textContent=meters>=1?meters+' m':Math.round(meters*100)+' cm';
 }
@@ -206,7 +209,7 @@ function renderFacts(){
   else if(state?.mode==='localization'&&!(poseAge<POSE_STALE_S)){banner.className='notice';banner.textContent='还不知道老三在这张图上的位置：在地图上右键（手机长按）老三所在的地方，选「把老三的位置设在这里」，再点一下车头朝向。';}
   else if(fault){banner.className='notice';const age=formatAge(ageOf(agent.fault.at));banner.textContent=fault+(age==='—'?'':'（'+age+'）')+'。下次出发时自动解除。';}
   else if(stale){banner.className='notice';banner.textContent='位姿数据中断，地图上显示的是最后已知位置。';}
-  else if(activeGoal()){banner.className='notice good';banner.textContent=(nav.agent?.navd?.job?.op==='explore'?'老三正在自动探索建图，蓝色箭头是这一段的目标':'老三正在自主导航去目标点（蓝色箭头）')+' · 随时可点「取消导航」或「紧急停止」。';}
+  else if(activeGoal()){banner.className='notice good';banner.textContent=({explore:'老三正在自动探索建图，蓝色箭头是这一段的目标',patrol:'老三正在巡航，蓝色箭头是下一个巡航点'}[nav.agent?.navd?.job?.op]||'老三正在自主导航去目标点（蓝色箭头）')+' · 随时可点「取消导航」或「紧急停止」。';}
   else{banner.className='notice good';banner.textContent=(state?.mode==='mapping'?'建图中':'定位导航中')+' · 地图、激光和位置实时更新。';}
   $('#last-update').textContent=state?'导航数据 '+formatAge(stateAge):'等待数据';
   loadRotation();
@@ -254,12 +257,13 @@ function renderControls(){
   $('#localize').disabled=!(ready&&$('#map-select').value);
   const menu=menuState();
   if(tool==='heading'&&poseBlocker(menu))setTool('view');
-  if(!$('#map-menu').hidden){setItem('goal',goalBlocker(menu));setItem('pose',poseBlocker(menu));}
+  if(!$('#map-menu').hidden){setItem('goal',goalBlocker(menu));setItem('pose',poseBlocker(menu));setItem('route',routeBlocker(menu,route.waypoints.length));}
+  renderRoute(menu);
   $('#cancel-nav').disabled=!lastStatus.online;
   if(navdUp){
     const key=job?job.id+':'+job.state:'';
     if(!jobSeen){jobSeen=true;lastJobKey=key;}
-    else if(key!==lastJobKey){lastJobKey=key;if(job&&job.state!=='running'){toast(jobText(job,NaN));if(job.op==='save'&&job.state==='ok')loadMaps();}dirty=true;}
+    else if(key!==lastJobKey){lastJobKey=key;if(job&&job.state!=='running'){toast(jobText(job,NaN));if(job.op==='save'&&job.state==='ok')loadMaps();if(job.op==='patrol')loadReports();}dirty=true;}
   }
   const board=lastStatus.state?.board||{},telemetry=board.telemetry||{},driving=busy&&job.op==='goal';
   const wheels=!!lastStatus.online&&board.wheels_ready&&!board.estopped;
@@ -279,12 +283,12 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#nav-dialog').o
 
 // ---- map context menu
 function menuState(){const agent=nav.agent;return {online:!!lastStatus.online&&!!navSocket&&!!agent,navd:agent?.navd,relay:!!agent?.relay,hasMap:!!nav.map,poseFresh:!!nav.pose&&ageOf(nav.pose.stamp)<POSE_STALE_S};}
-const MENU_HINT={goal:'老三自己规划路线开过去',pose:'选好后再点一下车头朝向'};
+const MENU_HINT={goal:'老三自己规划路线开过去',pose:'选好后再点一下车头朝向',route:'按顺序巡航到这里'};
 function setItem(action,reason){const item=$('#map-menu [data-action='+action+']');item.disabled=!!reason;item.querySelector('small').textContent=reason||MENU_HINT[action];}
 function openMenu(clientX,clientY){
   const rect=stage.getBoundingClientRect(),sx=clientX-rect.left,sy=clientY-rect.top,[x,y]=screenToWorld(view,sx,sy);
   menuPoint={x,y};const menu=$('#map-menu'),state=menuState();
-  setItem('goal',goalBlocker(state));setItem('pose',poseBlocker(state));
+  setItem('goal',goalBlocker(state));setItem('pose',poseBlocker(state));setItem('route',routeBlocker(state,route.waypoints.length));
   menu.hidden=false;
   menu.style.left=Math.max(8,Math.min(sx,view.width-menu.offsetWidth-8))+'px';
   menu.style.top=Math.max(8,Math.min(sy,view.height-menu.offsetHeight-8))+'px';
@@ -296,6 +300,7 @@ $('#map-menu').addEventListener('click',e=>{
   const item=e.target.closest('button[data-action]');if(!item||item.disabled||!menuPoint)return;
   const p=menuPoint;closeMenu();
   if(item.dataset.action==='goal')runTarget('goal',{x:p.x,y:p.y,yaw:fallbackYaw(p.x,p.y,'goal')});
+  else if(item.dataset.action==='route')addWaypoint(p.x,p.y);
   else{setTool('heading');arrow={id:null,x0:p.x,y0:p.y,x1:p.x,y1:p.y};dirty=true;}
 });
 $('#map-menu').addEventListener('contextmenu',e=>e.preventDefault());
@@ -394,6 +399,8 @@ $('#localize').onclick=()=>guarded($('#localize'),async()=>{
   if(!ok)return;
   await navCommand({op:'localize',map:name});resetMap();toast('正在加载地图 '+name);
 });
+$('#dock-cancel').onclick=()=>$('#cancel-nav').click();
+$('#dock-estop').onclick=()=>$('#estop').click();
 $('#cancel-nav').onclick=()=>{releaseStick();navCommand({op:'stop'}).then(reply=>toast(reply.navd_error?'已停车；导航服务没有响应：'+reply.navd_error:'已停车并取消导航')).catch(error=>toast(error.message));};
 
 // ---- saved maps
@@ -573,3 +580,76 @@ window.addEventListener('resize',()=>{dirty=true;});
   catch{toast('无法连接 Mini 服务');return;}
   resize();requestAnimationFrame(draw);poll();connectNav();connectControl();setInterval(renderFacts,500);renderFacts();
 })();
+
+// ---- patrol route: edited here, saved on the car per map, run by ugv-navd
+function routeMap(){return nav.state?.mode==='localization'?nav.state.map||null:null;}
+async function loadRoute(name){
+  routeLoading=true;
+  try{
+    const response=await fetch('/api/v1/nav/routes/'+encodeURIComponent(name));if(response.status===401){stopAll();location.replace('/');return;}
+    const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'读取巡航路线失败');
+    const stored=data.route||{};
+    route={map:name,loops:Number.isInteger(stored.loops)?stored.loops:1,waypoints:Array.isArray(stored.waypoints)?stored.waypoints.map(p=>({x:p.x,y:p.y,yaw:p.yaw??0})):[]};
+    routeDirty=false;dirty=true;
+  }catch(error){toast(error.message);route={map:name,loops:1,waypoints:[]};}
+  finally{routeLoading=false;renderControls();}
+}
+async function loadReports(){
+  try{const response=await fetch('/api/v1/nav/reports');if(!response.ok)return;reports=(await response.json()).reports||[];}catch{return;}
+  $('#route-report').textContent=reportText(reports[0]);
+}
+function addWaypoint(x,y){
+  const previous=route.waypoints[route.waypoints.length-1]||nav.pose;
+  const yaw=previous&&Math.hypot(x-previous.x,y-previous.y)>0.05?Math.atan2(y-previous.y,x-previous.x):0;
+  route.waypoints.push({x:fixed(x,3),y:fixed(y,3),yaw:fixed(yaw,4)});routeDirty=true;dirty=true;renderControls();
+  toast('已加入第 '+route.waypoints.length+' 个巡航点，记得「保存路线」');
+}
+function renderRoute(state){
+  const current=routeMap();
+  if(current&&route.map!==current&&!routeLoading){route={map:current,loops:1,waypoints:[]};loadRoute(current);}
+  const count=route.waypoints.length,legs=count*route.loops,usable=!!current&&route.map===current;
+  $('#route-badge').textContent=!usable?'—':count?count+' 个点 · '+route.loops+' 圈 · '+legs+' 段'+(routeDirty?' · 未保存':''):'还没有巡航点';
+  $('#route-badge').className='badge '+(usable&&count&&!routeDirty?'':'neutral');
+  const list=$('#route-list');
+  if(list.dataset.version!==JSON.stringify(route)){
+    list.dataset.version=JSON.stringify(route);
+    list.replaceChildren(...route.waypoints.map((p,i)=>{
+      const item=document.createElement('li');const label=document.createElement('span');label.textContent='('+p.x.toFixed(2)+', '+p.y.toFixed(2)+')';item.append(label);
+      for(const [text,title,action] of [['↑','往前移',()=>moveWaypoint(i,-1)],['↓','往后移',()=>moveWaypoint(i,1)],['✕','删除这个点',()=>removeWaypoint(i)]]){
+        const button=document.createElement('button');button.type='button';button.textContent=text;button.title=title;button.setAttribute('aria-label',title+'（第 '+(i+1)+' 个点）');button.onclick=action;item.append(button);
+      }
+      return item;
+    }));
+  }
+  if(document.activeElement!==$('#route-loops'))$('#route-loops').value=String(route.loops);
+  $('#route-save').disabled=!(usable&&count&&routeDirty);$('#route-clear').disabled=!(usable&&count);
+  const blocker=patrolBlocker(state,usable?count:0,routeDirty);$('#patrol-start').disabled=!!blocker;$('#patrol-start').title=blocker;
+  $('#route-hint').textContent=!current?'先「加载并定位」一张已保存的地图，再在地图上右键选「加入巡航路线」。':blocker&&count?'开始巡航前：'+blocker+'。':'右键地图选「加入巡航路线」添加巡航点（最多 20 个），老三会按顺序依次开过去。';
+}
+function moveWaypoint(index,step){const to=index+step;if(to<0||to>=route.waypoints.length)return;const [p]=route.waypoints.splice(index,1);route.waypoints.splice(to,0,p);routeDirty=true;dirty=true;renderControls();}
+function removeWaypoint(index){route.waypoints.splice(index,1);routeDirty=true;dirty=true;renderControls();}
+$('#route-loops').onchange=()=>{const loops=Math.round(Number($('#route-loops').value));route.loops=Math.min(10,Math.max(1,Number.isFinite(loops)?loops:1));$('#route-loops').value=String(route.loops);routeDirty=true;renderControls();};
+$('#route-clear').onclick=()=>guarded($('#route-clear'),async()=>{
+  const ok=await ask({title:'清空巡航路线？',confirm:'清空',danger:true,text:'会去掉这张地图上的全部巡航点；点「保存路线」之前，车上保存的路线不变。'});
+  if(!ok)return;route.waypoints=[];routeDirty=true;dirty=true;
+});
+$('#route-save').onclick=()=>guarded($('#route-save'),async()=>{
+  await navCommand({op:'route_save',map:route.map,route:{loops:route.loops,waypoints:route.waypoints}});
+  routeDirty=false;toast('巡航路线已保存到地图「'+route.map+'」');
+});
+$('#patrol-start').onclick=()=>guarded($('#patrol-start'),async()=>{
+  const count=route.waypoints.length,legs=count*route.loops;
+  const ok=await ask({title:'开始巡航？',confirm:'开始巡航',text:'老三会按路线依次开到 '+count+' 个巡航点，共 '+route.loops+' 圈（'+legs+' 段），每段都自己规划路线，遇到障碍会绕开或停下；电量低或某一段没到达就停止。\n请确认路上没有人、宠物和容易碰倒的东西；随时可以点「取消导航」或「紧急停止」。'});
+  if(!ok)return;
+  await navCommand({op:'patrol'});toast('老三开始巡航');
+});
+// Numbered waypoints joined in driving order (orange), back to the first when looping.
+function drawRoute(){
+  if(!route.waypoints.length||route.map!==routeMap())return;
+  const points=route.waypoints.map(p=>[p.x,p.y]);if(route.loops>1&&points.length>2)points.push(points[0]);
+  polyline(points,'rgba(217,130,43,.8)',2,[6,4]);
+  context.font='600 11px sans-serif';context.textAlign='center';context.textBaseline='middle';
+  route.waypoints.forEach((p,i)=>{const [sx,sy]=worldToScreen(view,p.x,p.y);context.beginPath();context.arc(sx,sy,9,0,Math.PI*2);context.fillStyle='#d9822b';context.fill();context.fillStyle='white';context.fillText(String(i+1),sx,sy+0.5);});
+  context.textAlign='start';context.textBaseline='alphabetic';
+}
+loadReports();

@@ -8,7 +8,7 @@ const source = fs.readFileSync(new URL('../src/tvpet_console/web/navmap.js', imp
 const names = ['parseNavPacket', 'worldToScreen', 'screenToWorld', 'zoomAt', 'mapBounds', 'fitView',
   'recolorMap', 'formatAge', 'areaText', 'healthText', 'faultText', 'modeText', 'logLevelClass', 'scaleBar',
   'arrowPose', 'mapCell', 'goalPlan', 'defaultMapName', 'mapNameValid', 'containerText', 'containerRunning',
-  'navdModeText', 'jobText', 'mapOptionText', 'poseBlocker', 'goalBlocker', 'sameSession', 'nearestWall', 'logText', 'exploreBlocker', 'formatDuration', 'panBy', 'dominantAngle'];
+  'navdModeText', 'jobText', 'mapOptionText', 'poseBlocker', 'goalBlocker', 'sameSession', 'nearestWall', 'logText', 'exploreBlocker', 'formatDuration', 'panBy', 'dominantAngle', 'routeBlocker', 'patrolBlocker', 'reportText'];
 const context = {TextDecoder, DataView, Uint8Array, JSON, Math, Number, Date, String, Array};
 vm.runInNewContext(source + '\n' + names.map(n => `this.${n}=${n};`).join(''), context);
 const h = context;
@@ -190,3 +190,18 @@ assert.ok(Math.abs(h.dominantAngle(wallCells(20)) * 180 / Math.PI - 20) <= 3);
 assert.ok(Math.abs(h.dominantAngle(wallCells(-15)) * 180 / Math.PI + 15) <= 3);
 assert.ok(Math.abs(h.dominantAngle(wallCells(0))) < 1e-9);
 assert.equal(h.dominantAngle([]), 0);
+
+// Patrol: progress wording, when routes can be edited and run, report summaries.
+assert.equal(h.jobText({op: 'patrol', state: 'running', started: 0, result: {loop: 1, loops: 2, index: 3, points: 4, reached: 2}}, 65), '正在巡航…（第 1/2 圈 · 第 3/4 点 · 已到 2 段 · 65 秒）');
+const localizedState = {...ready, navd: {...navd, mode: 'localization'}};
+assert.equal(h.routeBlocker(localizedState, 3), '');
+assert.equal(h.routeBlocker(localizedState, 20), '最多 20 个巡航点');
+assert.equal(h.routeBlocker(mappingState, 0), '巡航路线要在已保存的地图上编辑');
+assert.equal(h.patrolBlocker(localizedState, 2, false), '');
+assert.equal(h.patrolBlocker(localizedState, 0, false), '先在地图上加巡航点');
+assert.equal(h.patrolBlocker(localizedState, 2, true), '先保存路线');
+assert.equal(h.patrolBlocker({...localizedState, poseFresh: false}, 2, false), '先把老三的位置设好');
+assert.equal(h.reportText(null), '还没有巡航记录');
+const report = {modified: new Date(2026, 9, 23, 15, 4).getTime() / 1000, map: 'study', ok: false, completed_legs: 1, planned_legs: 4, abort_reason: 'stall_body'};
+assert.equal(h.reportText(report), '最近一次：10月23日 15:04 · study · 1/4 段 · 中止：车轮在转但车没动');
+assert.equal(h.reportText({...report, ok: true, completed_legs: 4}), '最近一次：10月23日 15:04 · study · 4/4 段 · 全部到达');
