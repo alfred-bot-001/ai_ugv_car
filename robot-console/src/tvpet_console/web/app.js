@@ -116,7 +116,7 @@ function stopStick(target){if(press[target]){press[target]={x:0,y:0};sendSticks(
 function releaseStick(){const had=engaged()||!!lease;pressGeneration++;clearInterval(streamTimer);streamTimer=null;press={wheels:null,gimbal:null};dragging=null;lease='';for(const target of ['wheels','gimbal'])knob(target,0,0);if(had&&csrf)api('control/stop').catch(()=>{});}
 for(const element of document.querySelectorAll('.joystick')){const target=element.dataset.target;element.addEventListener('pointerdown',e=>beginStick(element,e));element.addEventListener('pointermove',e=>{if(dragging===target&&press[target])positionStick(target,element,e);});for(const kind of ['pointerup','pointercancel','lostpointercapture'])element.addEventListener(kind,()=>endDrag(element));}
 // Keyboard, game-pad style anywhere on the page (keypad.js): W/A/S/D hold the wheels,
-// the arrow keys hold the gimbal; the held keys add up and letting go of the last one
+// I/J/K/L hold the gimbal; the held keys add up and letting go of the last one
 // of a target stops it. Fields and dialogs keep their keys.
 const heldKeys=new Set();
 function keyStick(target){const state=keypadVector(heldKeys,target);if(!state){stopStick(target);return;}press[target]=state;knob(target,state.x,state.y);if(dragging===target)dragging=null;sendSoon();}

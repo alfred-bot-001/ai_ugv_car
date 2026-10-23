@@ -1,4 +1,4 @@
-// Game-style keys (keypad.js): W/A/S/D are the wheels, the arrows the gimbal, held keys
+// Game-style keys (keypad.js): W/A/S/D are the wheels, I/J/K/L the gimbal (the arrows stay free to scroll), held keys
 // add up inside the unit circle, and keys typed into fields or dialogs are ignored.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,24 +11,29 @@ const {KEY_BINDINGS, keypadVector, keypadIgnores} = context;
 // Objects built inside the vm context have another prototype: compare the components.
 const same = (vector, x, y) => assert.deepEqual([vector.x, vector.y], [x, y]);
 
-assert.deepEqual(Object.keys(KEY_BINDINGS).sort(), ['ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'KeyA', 'KeyD', 'KeyS', 'KeyW']);
+assert.deepEqual(Object.keys(KEY_BINDINGS).sort(), ['KeyA', 'KeyD', 'KeyI', 'KeyJ', 'KeyK', 'KeyL', 'KeyS', 'KeyW']);
 for (const code of ['KeyW', 'KeyA', 'KeyS', 'KeyD']) assert.equal(KEY_BINDINGS[code].target, 'wheels', code);
-for (const code of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) assert.equal(KEY_BINDINGS[code].target, 'gimbal', code);
+for (const code of ['KeyI', 'KeyJ', 'KeyK', 'KeyL']) assert.equal(KEY_BINDINGS[code].target, 'gimbal', code);
+// The arrow keys are no longer bound: they scroll the page as usual.
+for (const code of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) assert.equal(code in KEY_BINDINGS, false, code);
 
 // Nothing held for a target → null (the page centres and drops that knob).
 assert.equal(keypadVector(new Set(), 'wheels'), null);
-assert.equal(keypadVector(new Set(['ArrowUp']), 'wheels'), null);
+assert.equal(keypadVector(new Set(['KeyI']), 'wheels'), null);
 same(keypadVector(new Set(['KeyW']), 'wheels'), 0, 1);
 same(keypadVector(new Set(['KeyS']), 'wheels'), 0, -1);
 same(keypadVector(new Set(['KeyA']), 'wheels'), -1, 0);
 same(keypadVector(new Set(['KeyD']), 'wheels'), 1, 0);
-same(keypadVector(new Set(['ArrowLeft']), 'gimbal'), -1, 0);
-same(keypadVector(new Set(['ArrowDown']), 'gimbal'), 0, -1);
+same(keypadVector(new Set(['KeyI']), 'gimbal'), 0, 1);
+same(keypadVector(new Set(['KeyJ']), 'gimbal'), -1, 0);
+same(keypadVector(new Set(['KeyK']), 'gimbal'), 0, -1);
+same(keypadVector(new Set(['KeyL']), 'gimbal'), 1, 0);
+assert.equal(keypadVector(new Set(['ArrowUp', 'ArrowLeft']), 'gimbal'), null);
 // Opposite keys cancel; a diagonal is scaled onto the unit circle like a dragged knob.
 same(keypadVector(new Set(['KeyW', 'KeyS']), 'wheels'), 0, 0);
-const diagonal = keypadVector(new Set(['KeyW', 'KeyD', 'ArrowUp']), 'wheels');
+const diagonal = keypadVector(new Set(['KeyW', 'KeyD', 'KeyI']), 'wheels');
 assert.ok(Math.abs(diagonal.x - Math.SQRT1_2) < 1e-9 && Math.abs(diagonal.y - Math.SQRT1_2) < 1e-9);
-same(keypadVector(new Set(['KeyW', 'KeyD', 'ArrowUp']), 'gimbal'), 0, 1);
+same(keypadVector(new Set(['KeyW', 'KeyD', 'KeyI']), 'gimbal'), 0, 1);
 assert.equal(keypadVector(new Set(['Space']), 'wheels'), null);
 
 // Ignore rules: repeats, modifier chords, IME composition, fields, editable text, open dialogs.
@@ -61,6 +66,10 @@ for (const page of ['dashboard.html', 'navigation.html']) {
   const stage = html.indexOf('class="video-stage"');
   assert.ok(html.indexOf('id="stick-wheels"') > stage && html.indexOf('id="stick-gimbal"') > html.indexOf('id="stick-wheels"'), page);
   assert.ok(html.includes('class="stage-sticks"'), page);
+  // The gimbal pad and the hints name I/J/K/L; no arrow glyphs are advertised as hotkeys.
+  assert.ok(html.includes('<span class="north"><b>I</b></span><span class="south"><b>K</b></span><span class="west"><b>J</b></span><span class="east"><b>L</b></span>'), page);
+  assert.ok(html.includes('<kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>'), page);
+  assert.equal(html.includes('<kbd>↑</kbd>') || html.includes('方向键'), false, page);
 }
 
 console.log('keypad frontend ok');

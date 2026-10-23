@@ -1,11 +1,12 @@
 "use strict";
 // Game-style keyboard driving shared by the dashboard and the map page: W/A/S/D hold
-// the wheels, the arrow keys hold the gimbal. Held keys add up (W+D drives forward
+// the wheels, I/J/K/L hold the gimbal (the arrow keys are left to the browser so they
+// still scroll the page). Held keys add up (W+D drives forward
 // while turning right) and the sum is clamped to the joystick's unit circle, so the
 // keyboard produces exactly the states a dragged knob would. Pure functions only; the
 // pages own the listeners, the held-key set and the control relay.
 const KEY_BINDINGS={KeyW:{target:'wheels',x:0,y:1},KeyS:{target:'wheels',x:0,y:-1},KeyA:{target:'wheels',x:-1,y:0},KeyD:{target:'wheels',x:1,y:0},
-  ArrowUp:{target:'gimbal',x:0,y:1},ArrowDown:{target:'gimbal',x:0,y:-1},ArrowLeft:{target:'gimbal',x:-1,y:0},ArrowRight:{target:'gimbal',x:1,y:0}};
+  KeyI:{target:'gimbal',x:0,y:1},KeyK:{target:'gimbal',x:0,y:-1},KeyJ:{target:'gimbal',x:-1,y:0},KeyL:{target:'gimbal',x:1,y:0}};
 // The state one target's held keys amount to, or null when none of its keys is down.
 function keypadVector(held,target){
   let x=0,y=0,any=false;
