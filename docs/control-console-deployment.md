@@ -470,6 +470,7 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **回滚**：Pi 装回 `releases/0.8.1/` 两个环境后重启服务；舵机零位如要还原，把相机转回原位再跑一次 `tvpet-gimbal-center`（没有「撤销」命令，EEPROM 只保存最后一次）。
 - **部署（2026-10-23 11:57，main `66b4b1d`，PR #17 合并后从主干顶端构建，校验输出 ok；两次变基只在本文件末尾与 PR #14/#16 的追加段落冲突，双方都保留）**：部署前核对 Mini 线上为主控台 0.12.2 / Pi 代理 0.8.1，等于合并前主干 `cc5f217`，没有别的分支在线上；用户已确认云台相机线在 ±170° 两端有余量。Pi 备份 `backups/20261023-pre-0.8.2/`（`venv-tvpet_pi/`、`pose-venv-tvpet_pi/`、`agent.json`），wheel 存 `releases/0.8.2/`（SHA-256 `effc3050…`，与本机构建一致），停服务后装进 `.venv` 和 `pose-venv`，重启一次成功、NRestarts=0。核验：两个环境均 0.8.2，`.venv/bin/tvpet-gimbal-center` 存在，安装包内 `PAN_LIMIT = 170.0`；代理 5 条对外连接；公网 `/health` `agent_online: true, mode: control`（即底盘、云台均 ready）。全程未发运动指令。Mini 的协议依赖包仍是 0.8.1（主控台不引用改动的模块，随下次 Mini 发布一起更新）。开着的 PR #15（底盘速度上限，Pi 0.9.0）需在本次之上变基。
 - **待办（用户在场）**：按上文步骤校零，再用圆盘左右各转到头，看线缆和画面；俯仰上下到头各一次。
+- **校零（2026-10-23 12:05，用户在车旁，相机已对正车头）**：停代理后跑 `tvpet-gimbal-center --camera-facing-front`，输出 `pan before -44.48° → after 0.09°，centered: true`（零位原来偏右约 44.5°，与验收证据里 -30～-33° 的静止读数吻合）；重新启动代理一次成功、NRestarts=0、5 条对外连接，公网 `/health` `mode: control`。舵机 EEPROM 已改，之前 `motion-evidence.json` 里的 pan 读数属于旧坐标系。两端转动实测待用户继续。
 
 ## 2026-10-23 摇杆速度上限放到官方满速 1.3 m/s（Mini 0.13.0 / Pi 0.9.0）
 
