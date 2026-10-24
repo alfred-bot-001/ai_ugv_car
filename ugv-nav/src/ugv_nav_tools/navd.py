@@ -198,6 +198,26 @@ def describe(request: Request) -> dict[str, Any]:
     return {"map": request.map} if request.map else {}
 
 
+# ugv-ros-op's reasons for not starting, as the map page says them.
+GOAL_ERROR_TEXT = (
+    (
+        "planning failed",
+        "没找到能走的路线。目标可能离墙太近、在没探索过的地方，或者和老三之间没有车能通过的通道",
+    ),
+    ("rejected goal", "导航拒绝了这个目标"),
+    ("did not answer", "导航没有响应"),
+    ("unavailable", "导航模块还没准备好，稍等再试"),
+    ("TimeoutError", "导航响应超时"),
+)
+
+
+def goal_error_text(error: str) -> str:
+    for needle, text in GOAL_ERROR_TEXT:
+        if needle in error:
+            return text
+    return error[:200] or "规划失败"
+
+
 def goal_summary(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
     """The few numbers the page shows, and a Chinese one-liner."""
     keep = ("ok", "error", "error_m", "error_rad", "duration_s", "timeout", "path_points")
@@ -215,7 +235,7 @@ def goal_summary(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
         return summary, "超时未到达，已停车"
     if "error_m" in result:
         return summary, f"未到达目标，停在离目标 {float(result['error_m']) * 100:.0f} cm 处"
-    return summary, "未能出发：" + str(result.get("error") or "规划失败")[:200]
+    return summary, "没有出发：" + goal_error_text(str(result.get("error") or ""))
 
 
 def env_mode(env_text: str) -> dict[str, Any]:

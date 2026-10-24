@@ -8,7 +8,7 @@ const source = fs.readFileSync(new URL('../src/tvpet_console/web/navmap.js', imp
 const names = ['parseNavPacket', 'worldToScreen', 'screenToWorld', 'zoomAt', 'mapBounds', 'fitView',
   'recolorMap', 'formatAge', 'areaText', 'healthText', 'faultText', 'modeText', 'logLevelClass', 'scaleBar',
   'arrowPose', 'mapCell', 'goalPlan', 'defaultMapName', 'mapNameValid', 'containerText', 'containerRunning',
-  'navdModeText', 'jobText', 'mapOptionText', 'poseBlocker', 'goalBlocker', 'sameSession', 'nearestWall', 'logText', 'exploreBlocker', 'formatDuration', 'panBy', 'dominantAngle', 'routeBlocker', 'patrolBlocker', 'reportText'];
+  'navdModeText', 'jobText', 'mapOptionText', 'poseBlocker', 'goalBlocker', 'sameSession', 'nearestWall', 'logText', 'exploreBlocker', 'formatDuration', 'panBy', 'dominantAngle', 'routeBlocker', 'patrolBlocker', 'reportText', 'reachCheck', 'cellCentre'];
 const context = {TextDecoder, DataView, Uint8Array, JSON, Math, Number, Date, String, Array};
 vm.runInNewContext(source + '\n' + names.map(n => `this.${n}=${n};`).join(''), context);
 const h = context;
@@ -205,3 +205,18 @@ assert.equal(h.reportText(null), '还没有巡航记录');
 const report = {modified: new Date(2026, 9, 23, 15, 4).getTime() / 1000, map: 'study', ok: false, completed_legs: 1, planned_legs: 4, abort_reason: 'stall_body'};
 assert.equal(h.reportText(report), '最近一次：10月23日 15:04 · study · 1/4 段 · 中止：车轮在转但车没动');
 assert.equal(h.reportText({...report, ok: true, completed_legs: 4}), '最近一次：10月23日 15:04 · study · 4/4 段 · 全部到达');
+
+// Reachability: a wall splits the map; the far side is reported unreachable with the
+// closest reachable cell; unknown space blocks too.
+const W2 = 20, H2 = 10, px = new Uint8ClampedArray(W2 * H2 * 4);
+for (let i = 0; i < W2 * H2; i++) px.set([251, 252, 250, 255], i * 4);
+for (let r = 0; r < H2; r++) px.set([38, 58, 50, 255], (r * W2 + 10) * 4);
+const across = h.reachCheck(px, W2, H2, [3, 5], [16, 5], 1);
+assert.equal(across.reachable, false);
+assert.deepEqual([...across.cell], [9, 5]);  // 1 cell from the wall at column 10 is allowed
+assert.equal(h.reachCheck(px, W2, H2, [3, 5], [6, 2], 1).reachable, true);
+for (let r = 0; r < H2; r++) px.set([0, 0, 0, 0], (r * W2 + 5) * 4);
+assert.equal(h.reachCheck(px, W2, H2, [3, 5], [7, 5], 1).reachable, false);
+const centre = h.cellCentre({origin: [-1, -2], resolution: 0.5, width: 4, height: 6}, 3, 0);
+assert.deepEqual([...centre], [0.75, 0.75]);
+assert.deepEqual([...h.mapCell({origin: [-1, -2], resolution: 0.5, width: 4, height: 6}, 0.75, 0.75)], [3, 0]);

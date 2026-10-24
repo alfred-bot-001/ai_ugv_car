@@ -286,6 +286,11 @@ def test_stop_during_navigation_marks_the_job_cancelled(tmp_path: Path) -> None:
 def test_goal_summary_wording() -> None:
     assert goal_summary({"ok": False, "timeout": True, "error_m": 1})[1] == "超时未到达，已停车"
     assert "规划失败" in goal_summary({"ok": False})[1]
+    planning = goal_summary({"ok": False, "error": "planning failed; motion not attempted"})[1]
+    assert planning.startswith("没有出发：没找到能走的路线")
+    assert (
+        "还没准备好" in goal_summary({"ok": False, "error": "RuntimeError: planner unavailable"})[1]
+    )
     assert goal_summary({"ok": False, "error_m": 0.3})[1] == "未到达目标，停在离目标 30 cm 处"
 
 
