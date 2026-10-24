@@ -1,7 +1,6 @@
 """Front Orbbec color camera: optional, leased like the gimbal camera, frames only."""
 
 import asyncio
-import contextlib
 import json
 import struct
 import time
@@ -122,12 +121,17 @@ def test_front_status_and_channel_retry(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("tvpet_pi.agent.connect", refuse)
 
     async def scenario():
-        task = asyncio.create_task(runtime._front_channel("link", None, "token"))
+        tasks = [
+            asyncio.create_task(runtime._front_channel("link", None, "token")),
+            # Gimbal video and audio retry on their own too, instead of ending the link.
+            asyncio.create_task(runtime._media_channel("video", "link", None, "token", retry=0.01)),
+            asyncio.create_task(runtime._media_channel("audio", "link", None, "token", retry=0.01)),
+        ]
         await asyncio.sleep(0.05)
-        assert not task.done()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        assert not any(task.done() for task in tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     asyncio.run(scenario())
 
