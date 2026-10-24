@@ -45,6 +45,19 @@ class Stick(BaseModel):
         return value
 
 
+class Lights(BaseModel):
+    """Switch the car's lights; a channel left out keeps its state.
+
+    Firmware T132 drives two PWM channels: IO4 is the pair of chassis headlights
+    (`base`), IO5 the light on the gimbal (`head`). On or off only, no dimming; strict
+    so that "on" / 1 are refused rather than coerced.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    base: bool | None = None
+    head: bool | None = None
+
+
 class Credentials(BaseModel):
     model_config = ConfigDict(extra="forbid")
     username: Literal["admin"]

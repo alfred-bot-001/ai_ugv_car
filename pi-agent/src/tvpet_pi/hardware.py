@@ -12,7 +12,7 @@ from typing import Any
 
 import serial
 
-from .protocol import Stick
+from .protocol import Lights, Stick
 from .safety import Guard, circle, differential
 
 # Measured wheel speed (m/s) above this is a runaway: emergency stop under a lease.
@@ -100,6 +100,9 @@ class Board:
         self.last_gimbal_at = 0.0
         self.last_gimbal_write = 0.0
         self.driving = False
+        # Lights (T132) have no telemetry: the agent is their only writer and remembers
+        # what it wrote; open() switches both off so the state is known.
+        self.lights = {"base": False, "head": False}
 
     def load_evidence(self) -> None:
         self.guard.wheels_verified = self.guard.gimbal_verified = False
@@ -159,6 +162,7 @@ class Board:
             )
             self.write({"T": 1, "L": 0.0, "R": 0.0})
             self.write({"T": 131, "cmd": 0})
+            self._write_lights()
             self.load_evidence()
             if self.guard.wheels_verified:
                 self.write({"T": 136, "cmd": int(self.evidence.get("firmware_timeout_ms", 300))})
@@ -174,6 +178,27 @@ class Board:
             if self.serial is None:
                 raise ValueError("UART 不可用")
             self.serial.write((json.dumps(command, allow_nan=False) + "\n").encode())
+
+    def _write_lights(self) -> None:
+        self.write(
+            {
+                "T": 132,
+                "IO4": 255 if self.lights["base"] else 0,
+                "IO5": 255 if self.lights["head"] else 0,
+            }
+        )
+
+    def set_lights(self, lights: Lights) -> dict[str, bool]:
+        """Switch the given channels now; needs the UART, not a lease or the gate."""
+        with self.lock:
+            wanted = dict(self.lights)
+            for name, value in lights.model_dump(exclude_none=True).items():
+                wanted[name] = bool(value)
+            if self.serial is None:
+                raise ValueError("UART 不可用")
+            self.lights = wanted
+            self._write_lights()
+            return dict(self.lights)
 
     def stop(self, *, emergency: bool = False) -> None:
         with self.lock:
@@ -360,6 +385,7 @@ class Board:
             "wheels_ready": self.guard.wheels_verified and not health_error,
             "gimbal_ready": self.guard.gimbal_verified and not health_error,
             "estopped": self.guard.estopped,
+            "lights": dict(self.lights),
             "control_qualified": self.guard.wheels_verified and self.guard.gimbal_verified,
             "gate_reason": health_error or self.gate_reason,
         }
