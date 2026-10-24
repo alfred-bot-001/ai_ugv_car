@@ -10,6 +10,7 @@
 | [`pi-agent/`](pi-agent/) | 老三 Pi，systemd | WSS 设备代理：V4L2/M2/ALSA、独占 UART、遥测、姿态 worker、租约与本地停止保护 |
 | [`ugv-nav/`](ugv-nav/) | 老三 Pi，Docker | ROS2 Humble 容器：激光雷达、TF，后续建图与导航；不接触 UART |
 | [`scripts/`](scripts/) | 开发机 / Pi | 实机运动验收、浏览器人脸叠加验证、离线姿态相册 |
+| [`firmware/tof-bridge/`](firmware/tof-bridge/) | 车头 XIAO ESP32-C5 | SEN0628 8×8 ToF 矩阵 → USB 串口桥（Arduino），pi-agent 据此做低矮障碍本地停车 |
 
 本项目 2026-10-14 从 [ai-tv-pet](https://github.com/alfred-bot-001/ai-tv-pet) 迁出。电视宠物（`mini-server/`、`tv-apk/`）仍留在原仓库。为了不影响已部署的服务，Python 包名（`ai-tv-pet-console`、`ai-tv-pet-pi-agent`）、模块名（`tvpet_console`、`tvpet_pi`）、launchd 标签和部署目录都沿用原名。
 

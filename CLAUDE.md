@@ -15,7 +15,8 @@
 | 目录 | 包 / 版本 | 运行在 |
 | --- | --- | --- |
 | `robot-console/` | `tvpet_console`（ai-tv-pet-console 0.13.1），FastAPI 主控台，网页在 `src/tvpet_console/web/` | Mini（ssh `agent001`） |
-| `pi-agent/` | `tvpet_pi`（ai-tv-pet-pi-agent 0.8.2），设备代理，唯一的底盘 UART 所有者，含导航桥 `nav.py` | 车上 Pi 5（ssh `agent003`，用户 ws，免密 sudo） |
+| `pi-agent/` | `tvpet_pi`（ai-tv-pet-pi-agent 0.10.0），设备代理，唯一的底盘 UART 所有者，含导航桥 `nav.py` 和 ToF 读取 `tof.py` | 车上 Pi 5（ssh `agent003`，用户 ws，免密 sudo） |
+| `firmware/tof-bridge/` | Arduino sketch（arduino-cli，`esp32:esp32:XIAO_ESP32C5`） | 车头 XIAO ESP32-C5，USB 接 Pi |
 | `ugv-nav/` | `ugv_nav_tools`（ai-ugv-car-nav-tools 0.5.2）+ ROS2 Humble 容器（SLAM Toolbox、Nav2、RF2O、EKF）+ 主机服务 `ugv-navd` | Pi 的 docker 容器 `ugv-nav` |
 
 包名、launchd 标签、systemd 服务名、部署目录**刻意沿用 ai-tv-pet-***，线上部署依赖它们，不要改名。
@@ -66,4 +67,5 @@ uv run pytest --cov=tvpet_console --cov=tvpet_pi --cov=ugv_nav_tools --cov-fail-
 - LiDAR（LD19/LD06 类，230400 baud，约 10 Hz）在 ttyUSB0 → `/dev/ugv_lidar`；麦克风已换成杰理 USB 麦克风（ALSA `ugvmic`，只录音、48 kHz；原讯飞 M2 和 `/dev/m2_mic` 已拆除），扬声器 ALSA `ugvspk`；前置 Orbbec 初代 Gemini 的彩色相机是普通 UVC（`agent.json` 的 `front_camera`，by-id `usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_AY27552002R`，每帧在 EOI 后补 3～5 个零字节），深度要用 OpenNI2 驱动、尚未接入；底盘走 Pi 的 `/dev/ttyAMA0`，由 Pi 代理独占。
 - 云台两个舵机：水平 ID 2、俯仰 ID 1；固件 T133 限 ±180° / -30°～90°，Pi 代理取 ±170° / -30°～90°（2026-10-23 前是 ±45° / -15°～45°）。舵机零位用 `tvpet-gimbal-center --camera-facing-front`（固件 T502，写进舵机 EEPROM）校准，要先停 `ai-tv-pet-agent.service`。
 - ESP32 是较旧的 ugv_base_ros 固件：`T1` 是 m/s 目标速度 + PID（死区 PWM 23）；遥测 T1001 的 `odl/odr` 单位是米，`v` 是电池电压（伏）；没有电流和电量百分比。
+- 前置 ToF（DFRobot SEN0628 经 XIAO ESP32-C5 桥接）：Pi 上按 by-id 配置 `tof_port`（`/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_10:BD:A3:CF:46:78-if00`），不要写 `ttyACMn`；pi-agent 独占该串口，地面基准标定 `tvpet-tof calibrate` 要先停 `ai-tv-pet-agent.service`；基准文件在 `~/workspace-agent/agent-data/ai-ugv-car/pi-agent/tof-baseline.json`。配置留空即关闭。
 - 已知未解决：低矮障碍卡车的「轮转车不动」检测、巡航末段位姿跳变、电量估算（见 TODO）。

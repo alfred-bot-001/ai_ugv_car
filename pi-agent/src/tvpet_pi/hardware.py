@@ -7,6 +7,7 @@ import os
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,13 @@ class Board:
         # Lights (T132) have no telemetry: the agent is their only writer and remembers
         # what it wrote; open() switches both off so the state is known.
         self.lights = {"base": False, "head": False}
+        # Extra sensor checks (the front ToF matrix, tvpet_pi.tof): each returns a stop
+        # reason identifier or "". A forward hold then ends through the ordinary stop,
+        # the same path as a lost link; `on_safety_stop(reason, lease)` tells the agent
+        # which lease was ended so navigation can void its arm session.
+        self.stop_checks: list[Callable[[], str]] = []
+        self.on_safety_stop: Callable[[str, str], None] | None = None
+        self.safety_stop: dict[str, Any] | None = None
 
     def load_evidence(self) -> None:
         self.guard.wheels_verified = self.guard.gimbal_verified = False
@@ -242,6 +250,28 @@ class Board:
             else:
                 self._drive_gimbal(stick, time.monotonic())
 
+    def _sensor_stop(self) -> None:
+        """Stop a forward hold when an extra sensor check asks for it.
+
+        Only forward motion is stopped (turning in place and backing away from the
+        obstacle stay possible), and only while a lease is driving; the reason is kept
+        for the status feed and handed to `on_safety_stop` with the lease it ended.
+        """
+        wheels = self.guard.holding("wheels")
+        if wheels is None or wheels.y <= 0:
+            return
+        for check in self.stop_checks:
+            reason = check()
+            if not reason:
+                continue
+            lease = self.guard.lease
+            self.stop()
+            self.safety_stop = {"reason": reason, "at": time.time()}
+            if self.on_safety_stop is not None:
+                with contextlib.suppress(Exception):
+                    self.on_safety_stop(reason, lease)
+            return
+
     def _drive(self) -> None:
         """Watchdog tick: re-drive fresh held states, settle once when none is left."""
         now = time.monotonic()
@@ -323,6 +353,8 @@ class Board:
                             self.stop(emergency=True)
                         elif self.health_error() or time.monotonic() - self.received_at > 0.6:
                             self.stop()
+                        else:
+                            self._sensor_stop()
                     self._drive()
                     if time.monotonic() < self.observe_until:
                         interval = 0.05
@@ -386,6 +418,7 @@ class Board:
             "gimbal_ready": self.guard.gimbal_verified and not health_error,
             "estopped": self.guard.estopped,
             "lights": dict(self.lights),
+            "safety_stop": self.safety_stop,
             "control_qualified": self.guard.wheels_verified and self.guard.gimbal_verified,
             "gate_reason": health_error or self.gate_reason,
         }

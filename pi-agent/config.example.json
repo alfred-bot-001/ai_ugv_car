@@ -10,6 +10,9 @@
   "speaker": "plughw:CARD=ugvspk,DEV=0",
   "motion_evidence": "/home/ws/deploy/ai-tv-pet-agent/private/motion-evidence.json",
   "nav_dir": "/home/ws/deploy/ai-tv-pet-agent/nav",
+  "tof_port": "",
+  "tof_baseline": "",
+  "tof_cliff_stop": true,
   "pose_python": "",
   "pose_model": ""
 }

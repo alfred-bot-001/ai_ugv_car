@@ -31,6 +31,7 @@ from .navframe import make_packet
 from .pose_process import PoseProcess
 from .protocol import AGENT_PROTOCOL, Lights, Stick
 from .safety import Guard, LeaseError
+from .tof import DEFAULT_BASELINE, ToFLink
 
 LOGGER = logging.getLogger(__name__)
 M2_MICROPHONE = "hw:CARD=XFMDPV0018,DEV=0"
@@ -41,6 +42,8 @@ NAV_STOP_TEXT = {
     "stall_wheel_left": "左轮转不动",
     "stall_wheel_right": "右轮转不动",
     "operator_cancel": "网页取消了导航",
+    "tof_low_obstacle": "ToF 看到低矮障碍",
+    "tof_cliff": "ToF 看到悬崖或台阶",
 }
 
 
@@ -70,6 +73,18 @@ class AgentRuntime:
                 "WARN", "已停车：" + NAV_STOP_TEXT.get(reason, reason)
             )
         self.nav_viewers_until = 0.0
+        # Front ToF matrix through the XIAO USB bridge (tvpet_pi.tof); the port is a
+        # /dev/serial/by-id path and "" (the default) leaves the whole feature off.
+        tof_port = str(config.get("tof_port", ""))
+        baseline = Path(str(config.get("tof_baseline") or DEFAULT_BASELINE)).expanduser()
+        self.tof = (
+            ToFLink(tof_port, baseline, cliffs=config.get("tof_cliff_stop", True) is not False)
+            if tof_port
+            else None
+        )
+        if self.tof:
+            self.board.stop_checks.append(self.tof.stop_reason)
+        self.board.on_safety_stop = self.safety_stopped
         # Map page controls run through ugv-navd (docker is outside this sandbox).
         navd_socket = Path(str(config.get("navd_socket", NAVD_SOCKET)))
         self.navd = NavdClient(navd_socket) if nav_dir else None
@@ -159,12 +174,20 @@ class AgentRuntime:
                 if alsa_card_present(self.speaker_device, cards)
                 else "unknown"
             },
+            "tof": self.tof.status() if self.tof else {"state": "disabled"},
             "edge": {
                 "state": self.pose.state,
                 "model": "MediaPipe Pose Lite",
                 "inference_ms": self.pose.inference_ms,
             },
         }
+
+    def safety_stopped(self, reason: str, lease: str) -> None:
+        """A Board sensor stop: void navigation's arm session if it held the lease, log it."""
+        if self.nav and lease and self.nav.lease == lease:
+            self.nav.halt(reason)  # tells the map page log itself
+        elif self.nav_stream:
+            self.nav_stream.log("WARN", "已停车：" + NAV_STOP_TEXT.get(reason, reason))
 
     def stop_playback(self) -> None:
         with self.playback_lock:
@@ -536,6 +559,8 @@ class AgentRuntime:
             self.nav_stream.start()
         if self.m2:
             self.m2.open()
+        if self.tof:
+            self.tof.open()
         try:
             while True:
                 tasks: list[asyncio.Task[None]] = []
@@ -592,6 +617,8 @@ class AgentRuntime:
             self.stop_playback()
             if self.m2:
                 self.m2.close()
+            if self.tof:
+                self.tof.close()
 
 
 def run_agent(config_path: Path) -> None:
