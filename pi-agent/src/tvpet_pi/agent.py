@@ -35,6 +35,10 @@ from .tof import DEFAULT_BASELINE, ToFLink
 
 LOGGER = logging.getLogger(__name__)
 M2_MICROPHONE = "hw:CARD=XFMDPV0018,DEV=0"
+# A frame or audio chunk that cannot be sent in time drops that media channel (it then
+# reconnects); frames older than 1.5 s are skipped anyway. Was 0.3 s / 0.05 s.
+FRAME_SEND_TIMEOUT = 1.0
+AUDIO_SEND_TIMEOUT = 0.5
 # Safety stops as the map page log shows them (tvpet_pi.nav reasons).
 NAV_STOP_TEXT = {
     "stall_body": "车轮在转但车没动",
@@ -434,7 +438,7 @@ class AgentRuntime:
                     ).encode()
                     await asyncio.wait_for(
                         socket.send(struct.pack("!I", len(metadata)) + metadata + value.jpeg),
-                        timeout=0.3,
+                        timeout=FRAME_SEND_TIMEOUT,
                     )
                     await asyncio.sleep(max(0, 0.2 - (time.monotonic() - started)))
                 elif isinstance(value, Frame):
@@ -460,7 +464,7 @@ class AgentRuntime:
                     ).encode()
                     await asyncio.wait_for(
                         socket.send(struct.pack("!I", len(metadata)) + metadata + value.jpeg),
-                        timeout=0.3,
+                        timeout=FRAME_SEND_TIMEOUT,
                     )
                     await asyncio.sleep(max(0, 0.2 - (time.monotonic() - started)))
                 else:
@@ -469,7 +473,7 @@ class AgentRuntime:
                     samples = struct.unpack("<320h", value)
                     rms = math.sqrt(sum(s * s for s in samples) / 320)
                     self.audio_dbfs = 20 * math.log10(max(rms, 1) / 32768)
-                    await asyncio.wait_for(socket.send(value), timeout=0.05)
+                    await asyncio.wait_for(socket.send(value), timeout=AUDIO_SEND_TIMEOUT)
             if channel == "video" and not self.video_enabled and not self.snapshot_id:
                 if worker.active and time.monotonic() >= self.snapshot_until:
                     await asyncio.to_thread(worker.stop)
@@ -491,14 +495,25 @@ class AgentRuntime:
             },
         )
 
-    async def _front_channel(self, link: str, tls: ssl.SSLContext, token: str) -> None:
-        """The front camera is optional too: a refused or broken channel only retries."""
+    async def _media_channel(
+        self, channel: str, link: str, tls: ssl.SSLContext, token: str, retry: float = 1.0
+    ) -> None:
+        """A media channel that fails reconnects on its own; it never ends the control link.
+
+        2026-10-24: a gimbal video frame that took over 0.3 s to send (Wi-Fi jitter) raised
+        out of the device link and tore down control, audio, map and front camera with it,
+        so the page showed 「视频暂时中断」 every few seconds.
+        """
         while True:
             try:
-                await self._media_sender("front", link, tls, token)
+                await self._media_sender(channel, link, tls, token)
             except (OSError, ValueError, TimeoutError, KeyError, WebSocketException) as error:
-                LOGGER.info("Front camera channel unavailable: %s", type(error).__name__)
-            await asyncio.sleep(5)
+                LOGGER.info("%s channel dropped: %s", channel, type(error).__name__)
+            await asyncio.sleep(retry)
+
+    async def _front_channel(self, link: str, tls: ssl.SSLContext, token: str) -> None:
+        """The front camera is optional too: a refused or broken channel only retries."""
+        await self._media_channel("front", link, tls, token, retry=5)
 
     async def _nav_channel(self, link: str, tls: ssl.SSLContext, token: str) -> None:
         """The map page feed is optional: its failures never end the control link."""
@@ -583,8 +598,8 @@ class AgentRuntime:
                         tasks = [
                             asyncio.create_task(self._control_reader()),
                             asyncio.create_task(self._status_sender()),
-                            asyncio.create_task(self._media_sender("video", link, tls, token)),
-                            asyncio.create_task(self._media_sender("audio", link, tls, token)),
+                            asyncio.create_task(self._media_channel("video", link, tls, token)),
+                            asyncio.create_task(self._media_channel("audio", link, tls, token)),
                         ]
                         if self.nav_stream:
                             tasks.append(asyncio.create_task(self._nav_channel(link, tls, token)))
