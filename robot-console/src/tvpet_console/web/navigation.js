@@ -362,8 +362,30 @@ async function runTarget(kind,target){
   catch(error){toast(error.message);}
   finally{pendingTarget=null;dirty=true;}
 }
+// Nav2 plans only through known free space with room for the car (allow_unknown false).
+const REACH_CLEAR_M=0.20;
+function detourFor(target){
+  if(!nav.map||!nav.mapImage||!nav.pose)return null;
+  const start=mapCell(nav.map,nav.pose.x,nav.pose.y),goal=mapCell(nav.map,target.x,target.y);
+  if(!start||!goal)return null;
+  const image=nav.mapImage,pixels=image.getContext('2d',{willReadFrequently:true}).getImageData(0,0,image.width,image.height).data;
+  const result=reachCheck(pixels,image.width,image.height,start,goal,Math.ceil(REACH_CLEAR_M/nav.map.resolution));
+  if(result.reachable)return null;
+  const [x,y]=cellCentre(nav.map,result.cell[0],result.cell[1]);
+  return {x,y,yaw:Math.atan2(target.y-y,target.x-x),gap:Math.hypot(target.x-x,target.y-y)};
+}
 async function confirmGoal(target){
   if(!nav.pose)throw new Error('还没有收到小车位置');
+  const detour=detourFor(target);
+  if(detour){
+    const plan=goalPlan(nav.pose,detour),wall=wallDistance(target.x,target.y);
+    if(plan.distance<0.1)throw new Error('这里到不了，老三已经在离它最近的能到的位置了');
+    pendingTarget={x:detour.x,y:detour.y,yaw:detour.yaw,tool:'goal'};dirty=true;
+    const ok=await ask({title:'这里可能到不了',confirm:'去最近能到的点',text:'地图上找不到从老三到这里、宽度够车通过的已知通道'+(wall<REACH_CLEAR_M?'（目标离墙只有约 '+Math.round(wall*100)+' cm）':'')+'。最近能走到的点（橙色箭头）离目标 '+detour.gap.toFixed(1)+' 米：直线约 '+plan.distance.toFixed(1)+' 米，预计 '+plan.seconds+' 秒左右。\n也可以先遥控或「自动探索」把中间的路建出来。出发前请确认路上没有人、宠物和容易碰倒的东西。'});
+    if(!ok)return;
+    await navCommand({op:'goal',x:fixed(detour.x,3),y:fixed(detour.y,3),yaw:fixed(detour.yaw,4)});
+    setTool('view');toast('老三出发了（去最近能到的点）');return;
+  }
   const plan=goalPlan(nav.pose,target);
   if(plan.distance<0.1)throw new Error('目标离老三太近（不到 10 cm）');
   const cell=cellKind(target.x,target.y),wall=wallDistance(target.x,target.y);

@@ -316,3 +316,36 @@ function reportText(report){
   const result=report.ok?'全部到达':'中止：'+(ABORT_TEXT[report.abort_reason]||report.abort_reason||'未知原因');
   return '最近一次：'+when+(report.map?' · '+report.map:'')+(legs?' · '+legs:'')+' · '+result;
 }
+
+// ---- can the car get there? Free cells (opaque, light) at least `clear` cells from any
+// wall (opaque, dark), reached from start through such cells; unknown (transparent)
+// blocks, as Nav2's planner (allow_unknown false) does. Returns whether goal is reachable
+// and the reachable cell closest to it. Cells are [col, row], row 0 on top.
+function reachCheck(pixels,width,height,start,goal,clear){
+  const n=width*height,far=clear+1,wall=new Int16Array(n).fill(far),queue=new Int32Array(n);
+  let head=0,tail=0;
+  for(let i=0;i<n;i++)if(pixels[i*4+3]===255&&pixels[i*4]<128){wall[i]=0;queue[tail++]=i;}
+  while(head<tail){
+    const i=queue[head++],col=i%width,row=(i-col)/width,step=wall[i]+1;if(step>=far)continue;
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+      const c=col+dx,r=row+dy;if((dx||dy)&&c>=0&&r>=0&&c<width&&r<height&&wall[r*width+c]>step){wall[r*width+c]=step;queue[tail++]=r*width+c;}
+    }
+  }
+  const passable=i=>pixels[i*4+3]===255&&pixels[i*4]>=128&&wall[i]>=clear;
+  const s=start[1]*width+start[0],g=goal[1]*width+goal[0],seen=new Uint8Array(n);
+  head=0;tail=0;queue[tail++]=s;seen[s]=1;
+  let best=s,bestGap=Math.hypot(start[0]-goal[0],start[1]-goal[1]);
+  while(head<tail){
+    const i=queue[head++],col=i%width,row=(i-col)/width;
+    if(i===g)return {reachable:true,cell:goal};
+    const gap=Math.hypot(col-goal[0],row-goal[1]);if(gap<bestGap){best=i;bestGap=gap;}
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+      const c=col+dx,r=row+dy,j=r*width+c;
+      if((dx||dy)&&c>=0&&r>=0&&c<width&&r<height&&!seen[j]&&passable(j)){seen[j]=1;queue[tail++]=j;}
+    }
+  }
+  return {reachable:false,cell:[best%width,(best-best%width)/width]};
+}
+
+// World centre of image cell [col, row] (row 0 on top); the inverse of mapCell.
+function cellCentre(meta,col,row){return [meta.origin[0]+(col+0.5)*meta.resolution,meta.origin[1]+(meta.height-row-0.5)*meta.resolution];}
