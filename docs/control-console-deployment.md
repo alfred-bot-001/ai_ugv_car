@@ -636,3 +636,5 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **配置（07:45）**：备份 `backups/20261025-pre-tof-enable/agent.json`；`agent.json` 加 `tof_port` 为上述 by-id 路径、`tof_cliff_stop: false`，其他键不变；`systemctl start` 一次成功，代理进程已独占打开 `ttyACM1`，日志无 ToF 相关告警。全程未发运动指令，`ugv-nav` 容器未碰。
 - **判断**：右半边整体无回波、上四行只剩两列，不像地面反射率问题，更像镜头右侧被支架或线缆遮挡、保护膜未撕或传感器朝向偏斜。待用户检查安装后重新标定，再开悬崖停车并做 S0-1 / S0-2。
 - **回滚**：把 `backups/20261025-pre-tof-enable/agent.json` 复制回 `private/agent.json` 并重启服务，ToF 回到关闭状态；基准文件可留着。
+- **复核安装后重新标定（07:54）**：用户调整传感器后，停服务重标（旧基准另存 `tof-baseline-20261025-0742.json`）。得到 25 个地面格：下三行 y5～y7 全部 8 列，中位数约 350 / 265 / 196 mm；上四行全列看到 1.0～1.6 m 的目标；y4 为过渡行。32 秒 294 帧 15.1 Hz：y5～y7 与 y0～y3 每格有效率 96～100%（仅 y0x7 为 0），y4 行 30～98%；地面格离散 ±5～33 mm；悬崖候选最多 2 格、从未达到 4 格，障碍候选 0，判定全程 `reason=-`。据此把 `tof_cliff_stop` 改回 `true`，重启服务一次成功、NRestarts=0，代理已独占打开 `ttyACM1`。阈值未改。S0-1 / S0-2 实车验收待做。
+- **回滚**：同上，复制回 `backups/20261025-pre-tof-enable/agent.json` 并重启。
