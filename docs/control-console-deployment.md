@@ -602,3 +602,13 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **核验**：两个环境 `pip show` 均 0.10.0；`.venv/bin/tvpet-tof` 存在，安装包内 `tof.FRONT_STOP_MM = 250`、`Board._sensor_stop` 存在；服务 active、对外 5 条连接、本地 4 条 socket；`ugv-navctl status` 遥测新鲜（age 0.05 s）、`fault: null`、`nav_owned: false`；重启后日志无警告或报错；公网 `/health` `agent_online: true, mode: control`。`agent.json` 未改，ToF 功能处于关闭状态。全程未发运动指令。
 - **回滚**：停服务，`pip install --no-deps --force-reinstall releases/0.9.4/ai_tv_pet_pi_agent-0.9.4-py3-none-any.whl` 装回两个环境（或把 `backups/20261024-pre-0.10.0/` 的两个 `tvpet_pi/` 目录复制回 site-packages），重启。
 - **启用步骤（待实车安装后，用户在场）**：传感器装车头前沿（离地 8～12 cm、俯 15～20°）接 XIAO，XIAO USB 接 Pi；`ls /dev/serial/by-id/` 找到 `usb-Espressif_USB_JTAG_serial_debug_unit_10:BD:A3:CF:46:78-if00`；停服务，车停平地，`.venv/bin/tvpet-tof --port <by-id> calibrate`；`agent.json` 加 `"tof_port": "<by-id>"`，启动服务；主控台设备状态应出现 `tof.state: active`、`hz` 约 15；再做 S0-1 / S0-2 验收并把阈值校准结果记回 §3.6。
+
+## 2026-10-24 视频不再拖垮整条设备连接（Pi 0.10.1，main `8e05947`）
+
+用户反馈：视频自己「暂时中断」。
+
+- **原因**：19:30～19:31 之间 Pi 代理的设备连接 1 分钟内断了 5 次（`Device connection failed: TimeoutError`）。云台视频帧发送超过 0.3 s（Wi-Fi 抖动）就抛 `TimeoutError`。这个异常从视频任务一路冒到设备连接，控制、音频、地图、前置相机全部断开重连，Mini 随之关闭浏览器的视频，页面就显示「视频暂时中断」。当时 Wi-Fi 信号 -54 dBm、省电模式关闭，之后 ping 正常，属于短时拥堵。
+- **修正**：云台视频和音频改用与前置相机相同的重连包装：通道出错只断自己，1 s 后重连，不再结束控制连接。发送超时：视频帧 1.0 s（原 0.3 s，超过 1.5 s 的旧帧本来就丢弃）、音频 0.5 s（原 0.05 s）。浏览器视频不会因为一次卡顿被关掉，新帧到达后自动恢复。
+- **验证**：pytest 413 项通过，覆盖率 84%（排除 main 上已有的两个 Pi 测试问题）；新增视频、音频通道被拒时持续重连、不结束任务的测试。
+- **部署**：`releases/0.10.1/` 装进 `.venv` 和 `pose-venv`，重启服务。当时导航容器因 18:25 Pi 重启处于停止状态，没有地图丢失。核验：服务 active，Pi 代理对外 5 条连接，Mini `/health` `agent_online: true`，`arm.json` 关闭。Mini 未变（主控台 0.13.9）。
+- **回滚**：装回 `releases/0.10.0/`（两个环境）后重启服务。
