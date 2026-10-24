@@ -81,6 +81,8 @@ OPS: tuple[str, ...] = (
     "explore",
     "patrol",
     "stop",
+    "standby",
+    "wake",
 ) + MAP_ADMIN
 # Exploration (map page "自动探索"): frontier legs, each one ordinary goal with its own
 # bounded arm window and battery gate. It ends when no frontier is left, on a safety
@@ -116,6 +118,8 @@ OP_TEXT = {
     "goal": "导航去目标点",
     "explore": "自动探索",
     "patrol": "巡航",
+    "standby": "休眠",
+    "wake": "唤醒",
 }
 
 
@@ -344,6 +348,13 @@ class Navd:
             return {"ok": True, **self.admin(request)}
         if request.op == "stop":
             return {"ok": True, **self.stop()}
+        if request.op == "wake":
+            # Instant: the port switch alone. Mode switches wait for the device themselves.
+            self.ctl.lidar_power(True)
+            return {"ok": True, "lidar": self.ctl.lidar}
+        if request.op == "standby" and self.container_state().startswith("running"):
+            if self.mode()["mode"] == "mapping":
+                raise ValueError("正在建图，地图还没保存，不休眠")
         return {"ok": True, "job": self.submit(request).to_json()}
 
     def container_state(self) -> str:
@@ -360,7 +371,13 @@ class Navd:
             mode = {"mode": "odometry", "map": None}
         with self.lock:
             job = self.job.to_json() if self.job else None
-        return {"container": self.container_state(), **mode, "job": job, "now": self.clock()}
+        return {
+            "container": self.container_state(),
+            **mode,
+            "job": job,
+            "lidar": self.ctl.lidar,
+            "now": self.clock(),
+        }
 
     def submit(self, request: Request) -> Job:
         with self.lock:
@@ -418,6 +435,8 @@ class Navd:
         if request.op == "save":
             ctl.save(request.map)
             return "ok", f"地图已保存为 {request.map}", {"map": request.map}
+        if request.op == "standby":
+            return self.standby()
         assert request.pose is not None
         pose = request.pose
         if request.op == "pose":
@@ -641,6 +660,21 @@ class Navd:
             if not missing or self.monotonic() >= deadline:
                 return missing
             self.ctl.sleep(READY_POLL_S)
+
+    def standby(self) -> tuple[str, str, dict[str, Any]]:
+        """Sleep mode (pi-agent asks after 30 idle minutes): no container, no LiDAR power.
+
+        A running localization stack is dropped: the saved map is on disk and the map
+        page loads it again after waking. Mapping (an unsaved map) is refused in handle().
+        """
+        parts = []
+        if self.container_state().startswith("running"):
+            self.ctl.stop_container()
+            self.container = ("exited", self.monotonic())
+            parts.append("导航容器已停止")
+        self.ctl.lidar_power(False)
+        parts.append("雷达已断电")
+        return "ok", "，".join(parts), {"lidar": self.ctl.lidar}
 
     def stop(self) -> dict[str, Any]:
         """Close the motion window now; Nav2 goals are cancelled in the background."""

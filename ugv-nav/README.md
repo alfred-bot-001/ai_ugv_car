@@ -68,6 +68,9 @@ uv pip install --python /home/ws/deploy/ugv-nav/.venv/bin/python --reinstall dis
 | `goal X Y YAW` | 先规划；成功后在 ≤120 s 的授权窗口内导航到目标 | **会** |
 | `patrol ROUTE.json [--loops N]` | 按航点逐段导航，每段单独授权，任一段失败即停止；报告写入 `reports/` | **会** |
 | `stop` | 撤销授权、停车、取消导航 | 停车 |
+| `lidar on\|off` | 雷达 USB 口（VL817 集线器 `1-1` 的 1 号口）供电；`off` 让雷达电机停转。`mapping` / `localize` 会先自动上电并等 `/dev/ugv_lidar` 出现 | 否 |
+
+主机服务 `ugv-navd` 除地图页的操作外还接受 Pi 代理的 `standby`（休眠：容器在跑则 `compose stop`，再切断雷达供电；正在建图或有任务在跑时拒绝）和 `wake`（立即上电），`status` 里的 `lidar` 字段是它最近一次设置的状态（`on` / `off` / `missing` / `unknown`）。需要 Pi 上装 `uhubctl`（`sudo apt install uhubctl`，2026-10-25 已装），ws 用户免密 sudo。
 
 巡航路线文件示例：
 

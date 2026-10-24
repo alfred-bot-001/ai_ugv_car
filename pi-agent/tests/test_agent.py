@@ -202,3 +202,89 @@ def test_lights_command_switches_the_board_and_reports_the_state() -> None:
         assert runtime.board.set_lights.call_count == 1
 
     asyncio.run(scenario())
+
+
+def sleepy_runtime(lidar: str = "on", container: str = "exited", mode: str = "odometry"):
+    from tvpet_pi.sleep import IDLE_SECONDS
+
+    runtime = AgentRuntime({})
+    runtime.board = Mock()
+    runtime.board.set_lights.return_value = {"base": False, "head": False}
+    runtime.control = Socket()
+    runtime.navd = Mock()
+    runtime.navd.request.return_value = {"ok": True, "lidar": lidar}
+    runtime.navd_status = {
+        "online": True, "container": container, "mode": mode, "map": None, "job": None,
+        "lidar": lidar,
+    }  # fmt: skip
+    return runtime, IDLE_SECONDS
+
+
+def test_a_command_wakes_a_sleeping_car() -> None:
+    async def scenario():
+        runtime, idle = sleepy_runtime(lidar="off")
+        assert await runtime.sleep_tick(0.0) is None
+        assert await runtime.sleep_tick(idle) == "sleep"
+        assert runtime.sleeper.asleep
+        runtime.navd.request.reset_mock()
+        await runtime.command({"id": "l1", "action": "lights", "args": {"base": True}})
+        assert runtime.navd.request.call_args.args[0] == {"op": "wake"}
+        assert not runtime.sleeper.asleep
+        await runtime.command({"id": "l2", "action": "lights", "args": {"head": True}})
+        assert runtime.navd.request.call_count == 1  # awake already: no second wake
+
+    asyncio.run(scenario())
+
+
+def test_a_quiet_half_hour_cuts_lidar_power_and_the_lights() -> None:
+    async def scenario():
+        runtime, idle = sleepy_runtime()
+        await runtime.sleep_tick(0.0)
+        runtime.video_enabled = True
+        assert await runtime.sleep_tick(idle) is None  # someone is watching
+        runtime.video_enabled = False
+        assert await runtime.sleep_tick(2 * idle - 1) is None
+        assert runtime.power_status(2 * idle - 1) == {
+            "state": "awake", "idle_seconds": idle - 1, "lidar": "on"
+        }  # fmt: skip
+        assert await runtime.sleep_tick(2 * idle) == "sleep"
+        assert runtime.navd.request.call_args.args[0] == {"op": "standby"}
+        lights = runtime.board.set_lights.call_args.args[0]
+        assert lights.base is False and lights.head is False
+        assert runtime.power_status(2 * idle)["state"] == "asleep"
+
+    asyncio.run(scenario())
+
+
+def test_navigation_work_keeps_the_car_awake() -> None:
+    async def scenario():
+        runtime, idle = sleepy_runtime(container="running healthy", mode="mapping")
+        await runtime.sleep_tick(0.0)
+        assert await runtime.sleep_tick(idle) is None  # mapping: the map is not saved
+        runtime.navd_status.update(mode="localization", job={"state": "running", "op": "goal"})
+        assert await runtime.sleep_tick(2 * idle) is None  # a goal is running
+        runtime.navd_status["job"]["state"] = "ok"
+        assert await runtime.sleep_tick(3 * idle - 1) is None
+        assert await runtime.sleep_tick(3 * idle) == "sleep"  # localization is dropped
+        assert runtime.navd.request.call_args.args[0] == {"op": "standby"}
+
+    asyncio.run(scenario())
+
+
+def test_lidar_power_follows_the_sleep_state_after_a_navd_restart() -> None:
+    async def scenario():
+        runtime, idle = sleepy_runtime(lidar="unknown")
+        await runtime.sleep_tick(0.0)  # awake and navd does not know: power it on
+        assert runtime.navd.request.call_args.args[0] == {"op": "wake"}
+        runtime.navd_status["lidar"] = "on"
+        runtime.navd.request.reset_mock()
+        await runtime.sleep_tick(10.0)
+        assert runtime.navd.request.call_count == 0
+        assert await runtime.sleep_tick(idle) == "sleep"
+        runtime.navd_status["lidar"] = "unknown"  # ugv-navd restarted while asleep
+        runtime.navd.request.reset_mock()
+        runtime.navd.request.side_effect = ValueError("「休眠」还没完成，请稍候")
+        await runtime.sleep_tick(idle + 10)  # asks again; a refusal is only logged
+        assert runtime.navd.request.call_args.args[0] == {"op": "standby"}
+
+    asyncio.run(scenario())

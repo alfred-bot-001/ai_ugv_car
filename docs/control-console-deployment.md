@@ -612,3 +612,13 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **验证**：pytest 413 项通过，覆盖率 84%（排除 main 上已有的两个 Pi 测试问题）；新增视频、音频通道被拒时持续重连、不结束任务的测试。
 - **部署**：`releases/0.10.1/` 装进 `.venv` 和 `pose-venv`，重启服务。当时导航容器因 18:25 Pi 重启处于停止状态，没有地图丢失。核验：服务 active，Pi 代理对外 5 条连接，Mini `/health` `agent_online: true`，`arm.json` 关闭。Mini 未变（主控台 0.13.9）。
 - **回滚**：装回 `releases/0.10.0/`（两个环境）后重启服务。
+
+## 2026-10-25 半小时无交互自动休眠（Pi 0.11.0 / ugv-nav 0.6.0 / Mini 0.13.10）
+
+用户反馈：雷达一直在转，浪费电；要求半小时没有任何交互或指令就进入休眠、节能。
+
+- **根因**：LD19 的电机只要 USB 口有 5 V 就一直转，和软件无关——排查时导航容器已停 4 小时，雷达照样转。雷达的 CP2102 单独插在 VL817 集线器（`uhubctl` 里的 `1-1`）的 1 号口，摄像头、麦克风在 2、3 号口；VL817 支持按端口断电。实测：`sudo uhubctl -l 1-1 -p 1 -a off` 后 CP2102 从总线消失，`-a on` 后 6 s 内 `/dev/ugv_lidar` 恢复并有数据。Pi 上 `apt install uhubctl`（2.5.0）。
+- **做法**：Pi 代理在沙箱里（`NoNewPrivileges`）不能 sudo，所以开关由 `ugv-navd` 执行。ugv-nav：`NavCtl.lidar_power(on)`、`wait_for_lidar()`（上电后等设备节点最多 10 s，`compose up` 需要它存在）、`stop_container()`；`set_mode` 先上电再起容器；CLI `ugv-navctl lidar on|off`。navd 新操作 `standby`（后台任务：容器在跑则 `compose stop`，再断电；有任务在跑或正在建图时拒绝，防止丢未保存地图）、`wake`（立即上电，不等设备）；`status` 多了 `lidar`（`on` / `off` / `missing` / `unknown`，进程内记忆）。Pi 代理 `tvpet_pi.sleep.SleepPolicy`（纯逻辑：安静 30 分钟 → sleep，交互 → wake）；代理每 5 s 一次 `sleep_tick`，不依赖 Mini 在线。「忙」= 有人看视频/听音/前置相机、开着地图页、持有运动租约、在播音、导航任务在跑、容器在建图。休眠时先关两盏车灯再发 `standby`；任何命令先 `touch`，刚从休眠醒来就发 `wake`。navd 重启后对账：清醒而 `lidar` 为 off/unknown → `wake`；休眠而 `lidar` 不是 off → 再发 `standby`。遥测 `power: {state, idle_seconds, lidar}`。定位模式会被停掉，醒来后要在地图页重新加载地图（用户已接受）。Mini：总览页「设备与边缘计算」多一行「休眠」，横幅在休眠时提示「任何操作都会唤醒」。
+- **验证**：ruff / 格式 / mypy 全过；pytest 428 项通过，覆盖率 84.5%；新增 ugv-nav 测试 6 项（供电开关与等待设备、`set_mode` 先上电、CLI、standby/wake 四种情形）、Pi 测试 8 项（策略 4 项、代理接入 4 项）、前端 `test_power_frontend.mjs`，7 个 `.mjs` 全过。`test_nav_stream.py::test_forwarding_only_while_the_page_is_open` 在 `origin/main` `43ae60b` 上同样失败（连跑两次），与本次无关。实机只验证了 USB 口断电与恢复；**电机是否真停需用户在车旁听一次**（集线器切的是否是 VBUS 只能这样确认）。
+- **部署**：待用户「可以上」。顺序：ugv-nav 先（`uv build --package ai-ugv-car-nav-tools --wheel --out-dir ugv-nav/dist`，rsync 到 `/home/ws/deploy/ugv-nav/src/`，主机 `.venv` 装 0.6.0 wheel，重启 `ugv-navd`；镜像 0.6.0 可在下次重建容器时一起构建，`compose.yaml` 默认版本已改，**容器在跑且有未保存地图时不要重建**），再 Pi 代理 0.11.0（两个环境），最后 Mini 0.13.10（主控台 wheel + 协议包 0.11.0 wheel）。
+- **回滚**：ugv-nav 主机 `.venv` 装回 0.5.9 并重启 `ugv-navd`（雷达若处于断电状态先 `sudo uhubctl -l 1-1 -p 1 -a on`）；Pi 装回 `releases/0.10.1/`；Mini 装回 `releases/0.13.9-ai_ugv_car-055a31a/`。

@@ -43,6 +43,11 @@ BATTERY_CRITICAL_V = 9.2
 BATTERY_SAMPLE_S = 3.0
 BATTERY_MIN_SAMPLES = 5
 STANDSTILL_MPS = 0.01
+# The LD19 motor spins whenever its USB port carries 5 V, whatever software runs, so
+# the car's sleep mode cuts that port's power on the VL817 hub (uhubctl, 2026-10-25).
+# After power-on the CP2102 enumerates in about a second; compose needs the device node.
+LIDAR_READY_S = 10.0
+LIDAR_POLL_S = 0.5
 ENV_MAP = re.compile(r"map:=/maps/([A-Za-z0-9_-]{1,64})\.yaml")
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
@@ -57,6 +62,10 @@ class Settings:
     # <service>/, the global layout for runtime data.
     data: Path = Path("/home/ws/workspace-agent/agent-data/ai-ugv-car/ugv-nav")
     container: str = "ugv-nav"
+    # Hub port of the LiDAR's CP2102 (`uhubctl` lists it) and the udev name it gets.
+    lidar_hub: str = "1-1"
+    lidar_port: int = 1
+    lidar_device: Path = Path("/dev/ugv_lidar")
 
     @property
     def compose_dir(self) -> Path:
@@ -149,6 +158,8 @@ class NavCtl:
         # `arm_lock`, so a goal that has not armed yet can no longer open its window.
         self.arm_lock = threading.Lock()
         self.cancelled: Callable[[], bool] = lambda: False
+        # Last state this process set on the LiDAR's hub port: on | off | missing | unknown.
+        self.lidar = "unknown"
 
     def standstill_voltage(self) -> float:
         """Median pack voltage while both wheels are still; motor load sags it."""
@@ -183,6 +194,26 @@ class NavCtl:
     def compose(self, *args: str) -> None:
         command = ["sudo", "-n", "docker", "compose", *args]
         self.run(command, check=True, cwd=self.settings.compose_dir)
+
+    def lidar_power(self, on: bool) -> None:
+        """Switch the LiDAR's USB port (its motor runs on port power alone)."""
+        s = self.settings
+        command = ["sudo", "-n", "uhubctl", "-l", s.lidar_hub, "-p", str(s.lidar_port)]
+        self.run([*command, "-a", "on" if on else "off"], check=True, capture_output=True)
+        self.lidar = "on" if on else "off"
+
+    def wait_for_lidar(self) -> None:
+        """The device node must exist before docker can map it into the container."""
+        deadline = self.clock() + LIDAR_READY_S
+        while not self.settings.lidar_device.exists():
+            if self.clock() >= deadline:
+                self.lidar = "missing"
+                raise RuntimeError(f"{self.settings.lidar_device} did not appear after power-on")
+            self.sleep(LIDAR_POLL_S)
+
+    def stop_container(self) -> None:
+        self.disarm()
+        self.compose("stop")
 
     def disarm(self) -> None:
         write_arm(self.settings.board, enabled=False, now=self.clock())
@@ -224,6 +255,8 @@ class NavCtl:
             mode_env(mapping=mapping, map_file=map_file, keepout=keepout)
         )
         self.ensure_data()
+        self.lidar_power(True)  # the car may be asleep (ugv_nav_tools.navd standby)
+        self.wait_for_lidar()
         self.compose("up", "-d", "--force-recreate")
 
     def ensure_data(self) -> None:
@@ -392,6 +425,9 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("stop", help="撤销授权、停车并取消导航")
     sub.add_parser("mapping", help="切换到建图模式（不会自行运动）")
     sub.add_parser("where", help="当前地图坐标")
+    sub.add_parser("lidar", help="雷达 USB 口供电（off 让雷达停转）").add_argument(
+        "state", choices=("on", "off")
+    )
     for name, text in (("save", "保存当前地图"), ("localize", "在已保存的地图上定位")):
         sub.add_parser(name, help=text).add_argument("map", type=map_name)
     for name, text in (("pose", "设置初始位姿"), ("goal", "导航到目标（会运动）")):
@@ -525,6 +561,9 @@ def main(argv: Sequence[str] | None = None, ctl: NavCtl | None = None) -> int:
         output = f"地图已保存到 maps/{args.map}.yaml"
     elif args.op == "where":
         output = ctl.json_op("pose")
+    elif args.op == "lidar":
+        ctl.lidar_power(args.state == "on")
+        output = f"雷达 USB 口供电已切换为 {args.state}。"
     elif args.op == "pose":
         output = ctl.json_op("set-pose", str(args.x), str(args.y), str(args.yaw))
     elif args.op == "goal":

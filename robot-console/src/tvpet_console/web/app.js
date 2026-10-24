@@ -31,11 +31,13 @@ function poseReviewText(review){
   if(review.state==='waiting')return '本机审核采样：'+progress+' · 等待新画面';
   return '本机审核采样：'+progress+' · 等待读取采样状态';
 }
+// Sleep mode (Pi 0.11.0): after thirty quiet minutes the car cuts the LiDAR's USB power.
+function powerText(power){if(!power)return '未知';const minutes=Math.floor((power.idle_seconds||0)/60),asleep=power.state==='asleep',lidar=power.lidar;const note=lidar==='off'?'雷达已断电':lidar==='missing'?'雷达未找到':lidar==='unknown'?'雷达状态未知':asleep?'雷达仍供电':'';return (asleep?'休眠中':'清醒')+(note?' · '+note:'')+' · 空闲 '+minutes+' 分钟';}
 function render(data){status=data;const online=data.online,state=data.state||{},system=state.system||{},board=state.board||{},telemetry=board.telemetry||{};
   const onlineBadge=$('#online-badge');onlineBadge.textContent=online?'老三在线':'老三离线';onlineBadge.className='badge '+(online?'':'warning');
   $('#sidebar-status').textContent=online?'设备连接正常':'等待设备连接';
   $('#connection-banner').className='notice '+(online?'good':'');
-  $('#connection-banner').textContent=online?(board.wheels_ready&&board.gimbal_ready?'老三已就绪 · 拖动圆盘控制动作，松手停止。':'设备暂不可控 · '+(board.gate_reason||'等待硬件反馈正常后恢复控制。')):'老三尚未连接或数据已过期。Mini 主控台正常，设备操作暂停。';
+  $('#connection-banner').textContent=online?(state.power?.state==='asleep'?'老三休眠中 · 雷达已断电省电，任何操作都会唤醒。':board.wheels_ready&&board.gimbal_ready?'老三已就绪 · 拖动圆盘控制动作，松手停止。':'设备暂不可控 · '+(board.gate_reason||'等待硬件反馈正常后恢复控制。')):'老三尚未连接或数据已过期。Mini 主控台正常，设备操作暂停。';
   metric('camera',labels[state.camera?.state]||'未知',state.camera?.error||state.camera?.format||'未取得摄像头信息');
   metric('microphone',labels[state.microphone?.state]||'未知',state.microphone?.dbfs!=null?state.microphone.dbfs.toFixed(1)+' dBFS':state.microphone?.format||'等待麦克风状态');
   metric('servo',online&&board.state==='available'?'遥测正常':'未知',board.gimbal_ready&&board.wheels_ready?'可以控制':board.gate_reason||'等待硬件反馈');
@@ -44,7 +46,7 @@ function render(data){status=data;const online=data.online,state=data.state||{},
   const battery=batteryText(telemetry.v,!!press.wheels);metric('battery',battery.value,battery.detail);$('#metric-battery').classList[battery.level===0?'add':'remove']('low');
   $('#control-mode').textContent=board.wheels_ready&&board.gimbal_ready?'控制已验收':'观察模式';
   $('#fan').textContent=system.fan_rpm!=null?system.fan_rpm+' RPM':'未知';$('#throttled').textContent=system.throttled==='throttled=0x0'?'无欠压 / 限频':system.throttled||'未知';
-  $('#uart').textContent=board.state==='available'?'收到新遥测 · '+board.age_seconds.toFixed(1)+'秒前':'无新遥测';$('#edge').textContent=(state.edge?.state==='active'?'姿态识别中':labels[state.edge?.state]||'未启用')+(state.edge?.inference_ms!=null?' · '+Math.round(state.edge.inference_ms)+' ms':'');const review=data.pose_review;if($('#pose-review-detail')){$('#pose-review-detail').textContent=poseReviewText(review);$('#pose-review-detail').title=review?.day?'统计日期 '+review.day+' · '+(review.timezone||'Asia/Singapore'):'';}
+  $('#uart').textContent=board.state==='available'?'收到新遥测 · '+board.age_seconds.toFixed(1)+'秒前':'无新遥测';$('#power').textContent=powerText(state.power);$('#edge').textContent=(state.edge?.state==='active'?'姿态识别中':labels[state.edge?.state]||'未启用')+(state.edge?.inference_ms!=null?' · '+Math.round(state.edge.inference_ms)+' ms':'');const review=data.pose_review;if($('#pose-review-detail')){$('#pose-review-detail').textContent=poseReviewText(review);$('#pose-review-detail').title=review?.day?'统计日期 '+review.day+' · '+(review.timezone||'Asia/Singapore'):'';}
   $('#speaker-state').textContent=state.speaker?.state==='active'?'扬声器播放中':state.speaker?.state==='available'?'扬声器已识别':'扬声器未知';
   $('#audio-detail').textContent=state.microphone?.error||state.microphone?.format||'等待麦克风状态';
   $('#last-update').textContent=online?'数据更新 '+new Date(system.sampled_at*1000).toLocaleTimeString('zh-CN',{hour12:false}):'设备数据不可用';
