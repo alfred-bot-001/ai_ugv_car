@@ -575,6 +575,15 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **部署**：ugv-nav 备份 `backups/20261024-pre-0.5.9/`，镜像 0.5.9，主机 `.venv` 0.5.9，`ugv-navd` 重启（容器未重建）。Mini `releases/0.13.7-ai_ugv_car-991d40b/`，`/health` 正常。全程未发运动指令。
 - **回滚**：Mini 装回 `releases/0.13.6-ai_ugv_car-207461e/`；ugv-nav 主机 `.venv` 装回 0.5.8 并重启 `ugv-navd`。
 
+## 2026-10-24 地图页「实时画面」移到右上角（Mini 0.13.8，main `2144b3f`）
+
+用户要求：地图导航页的实时画面放到右上角。
+
+- **改动**：右侧栏顺序改为「实时画面 → 建图与导航 → 车辆状态 → 导航日志」，画面和两个圆盘成为右栏第一块；遥控说明改为「上方实时画面」，手机底栏顺序改为「地图 · 画面 · 控制 · 日志」。只改 `navigation.html`，无接口变化。
+- **验证**：pytest 397 项通过，覆盖率 83.8%；`.mjs` 全过；本机预览桌面宽度下画面在右上。CI 的两个 `test_sso.py` 失败在 main `638132c` 上同样出现，与本次无关。
+- **部署**：备份 `backups/pre-0.13.8-20261024-153955/`（console.sqlite3）；`releases/0.13.8-ai_ugv_car-2144b3f/`（主控台 0.13.8、Pi 代理 0.9.3 未变）；`launchctl bootout/bootstrap` 重启后 `/health` 正常，Pi 代理三条 WSS 自动重连；线上包内页面顺序已核对。全程未发运动指令。
+- **回滚**：停服务后装回 `releases/0.13.7-ai_ugv_car-991d40b/ai_tv_pet_console-0.13.7-py3-none-any.whl` 并重启。
+
 ## 2026-10-24 车灯开关（Pi 0.9.4 / Mini 0.13.9）
 
 用户需求：给小车加开灯功能，三盏灯；开关放在实时视频右上角，底盘前灯和云台灯分开两个开关。
@@ -582,4 +591,4 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **做法**：固件 T132 的 IO4 管底盘两盏前灯、IO5 管云台灯，只用 0 / 255 两档。Pi 代理新增 `lights` 命令（`protocol.Lights`，strict，`base` / `head` 两个可选布尔，缺省的通道保持原状），启动时写 `{"T":132,"IO4":0,"IO5":0}`，状态 `board.lights` 随遥测上报。Mini 新增 `POST /api/v1/control/lights`（登录 + CSRF，审计 `device.lights`，不碰控制租约）。页面在视频区右上角、全屏按钮左侧放「前灯」「云台灯」两个按钮，亮时浅绿底；刚点过的结果保留 3 秒，避免被慢一拍的轮询状态闪回。
 - **验证**：pytest 401 项通过，覆盖率 83.9%；`.mjs` 新增灯光用例；本机预览核对桌面与手机宽度外观。实车尚未验证。
 - **部署**：待办。Pi 代理 wheel 装进 `.venv` 和 `pose-venv`，重启 `ai-tv-pet-agent.service`（重启会把灯关掉，不影响底盘）；Mini 装 0.13.9。部署后在页面各开关一次，确认灯亮、状态随之变化。
-- **回滚**：Pi 装回 `releases/0.9.3/`；Mini 装回 `releases/0.13.7-ai_ugv_car-991d40b/`。
+- **回滚**：Pi 装回 `releases/0.9.3/`；Mini 装回 `releases/0.13.8-ai_ugv_car-2144b3f/`。
