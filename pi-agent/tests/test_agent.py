@@ -185,3 +185,20 @@ def test_usb_microphone_without_m2(monkeypatch) -> None:
         assert json.loads(runtime.control.sent[-1])["ok"] and runtime.microphone.active
 
     asyncio.run(scenario())
+
+
+def test_lights_command_switches_the_board_and_reports_the_state() -> None:
+    async def scenario():
+        runtime = AgentRuntime({})
+        runtime.board = Mock()
+        runtime.board.set_lights.return_value = {"base": True, "head": False}
+        runtime.control = Socket()
+        await runtime.command({"id": "l1", "action": "lights", "args": {"base": True}})
+        await runtime.command({"id": "l2", "action": "lights", "args": {"base": "bright"}})
+        results = [json.loads(raw) for raw in runtime.control.sent]
+        assert results[0]["ok"] and results[0]["lights"] == {"base": True, "head": False}
+        assert runtime.board.set_lights.call_args.args[0].base is True
+        assert not results[1]["ok"]
+        assert runtime.board.set_lights.call_count == 1
+
+    asyncio.run(scenario())

@@ -22,7 +22,14 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 from tvpet_pi.nav_ops import NavCommand
-from tvpet_pi.protocol import AGENT_PROTOCOL, Credentials, PasswordChange, SpeechRequest, Stick
+from tvpet_pi.protocol import (
+    AGENT_PROTOCOL,
+    Credentials,
+    Lights,
+    PasswordChange,
+    SpeechRequest,
+    Stick,
+)
 
 from .annotations import (
     AnnotationConflict,
@@ -485,6 +492,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result = await rpc("lease")
         control_owner = current.token_hash
         return result
+
+    @app.post("/api/v1/control/lights")
+    async def lights(request: Request, body: Lights) -> dict[str, Any]:
+        """Switch the chassis headlights or the gimbal light; the control owner is untouched."""
+        await identity(request, mutate=True)
+        result = await rpc("lights", body.model_dump(exclude_none=True))
+        return {"lights": result.get("lights", {})}
 
     @app.post("/api/v1/control/{action}")
     async def control(request: Request, action: str) -> dict[str, Any]:

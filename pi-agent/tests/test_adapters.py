@@ -13,7 +13,7 @@ import pytest
 from tvpet_pi.capture import Camera, CaptureWorker, Microphone
 from tvpet_pi.hardware import Board
 from tvpet_pi.m2 import M2Link, encode
-from tvpet_pi.protocol import Stick
+from tvpet_pi.protocol import Lights, Stick
 from tvpet_pi.safety import Guard
 
 
@@ -222,3 +222,37 @@ def test_gimbal_limits_follow_the_factory_range() -> None:
     assert board.health_error() == "云台反馈超出控制范围"
     board.telemetry["pan"], board.telemetry["tilt"] = 0.0, -35.0
     assert board.health_error() == "云台反馈超出控制范围"
+
+
+def test_lights_start_off_and_switch_per_channel(monkeypatch) -> None:
+    """T132: IO4 is the two chassis headlights, IO5 the gimbal light; both off at open."""
+    uart = Mock()
+    uart.in_waiting = 0
+    uart.read.return_value = b""
+    monkeypatch.setattr("tvpet_pi.hardware.serial.Serial", Mock(return_value=uart))
+    board = Board("test-uart", Guard())
+    board.open()
+    try:
+
+        def writes() -> list[dict[str, Any]]:
+            return [json.loads(call.args[0]) for call in uart.write.call_args_list]
+
+        assert {"T": 132, "IO4": 0, "IO5": 0} in writes()
+        assert board.status()["lights"] == {"base": False, "head": False}
+        assert board.set_lights(Lights(base=True)) == {"base": True, "head": False}
+        assert writes()[-1] == {"T": 132, "IO4": 255, "IO5": 0}
+        assert board.set_lights(Lights(head=True)) == {"base": True, "head": True}
+        assert writes()[-1] == {"T": 132, "IO4": 255, "IO5": 255}
+        assert board.set_lights(Lights(base=False)) == {"base": False, "head": True}
+        assert writes()[-1] == {"T": 132, "IO4": 0, "IO5": 255}
+        assert board.status()["lights"] == {"base": False, "head": True}
+    finally:
+        board.close()
+
+
+def test_lights_need_the_uart_but_no_lease() -> None:
+    board = Board("test-uart", Guard())
+    with pytest.raises(ValueError, match="UART"):
+        board.set_lights(Lights(base=True))
+    with pytest.raises(ValueError):
+        Lights.model_validate({"base": True, "IO4": 255})

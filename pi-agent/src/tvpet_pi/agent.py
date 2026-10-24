@@ -29,7 +29,7 @@ from .nav_ops import NAVD_SOCKET, OP_TEXT, NavCommand, NavdClient
 from .nav_stream import NavStream
 from .navframe import make_packet
 from .pose_process import PoseProcess
-from .protocol import AGENT_PROTOCOL, Stick
+from .protocol import AGENT_PROTOCOL, Lights, Stick
 from .safety import Guard, LeaseError
 
 LOGGER = logging.getLogger(__name__)
@@ -239,6 +239,8 @@ class AgentRuntime:
                 result["lease"] = await asyncio.to_thread(self.board.acquire)
             elif action == "stick":
                 self.board.move(Stick.model_validate(args))
+            elif action == "lights":
+                result["lights"] = self.board.set_lights(Lights.model_validate(args))
             elif action == "media.set":
                 channel, enabled = args.get("channel"), args.get("enabled") is True
                 if channel not in ("video", "audio", "front"):
