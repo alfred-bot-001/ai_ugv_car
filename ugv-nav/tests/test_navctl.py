@@ -111,9 +111,11 @@ class FakeRos:
 
 
 def make_ctl(tmp_path: Path, navigate: list[dict[str, Any]]) -> tuple[NavCtl, FakeRos, Mock]:
+    (tmp_path / "ugv_lidar").write_text("")  # the LiDAR is plugged in and powered
     settings = Settings(
-        deploy=tmp_path / "deploy", board=tmp_path / "board", data=tmp_path / "data"
-    )
+        deploy=tmp_path / "deploy", board=tmp_path / "board", data=tmp_path / "data",
+        lidar_device=tmp_path / "ugv_lidar",
+    )  # fmt: skip
     settings.board.mkdir()
     (settings.compose_dir).mkdir(parents=True)
     settings.maps.mkdir(parents=True)
@@ -301,3 +303,69 @@ def test_probe_uses_a_short_probe_arm_and_summarizes(
         summary["L_mean"] == 0.04 and summary["R_mean"] == 0.06 and summary["L_zero_share"] == 0.0
     )
     assert json.loads((ctl.settings.board / "arm.json").read_text()) == {"enabled": False}
+
+
+def test_lidar_power_switches_the_hub_port_and_waits_for_the_device(tmp_path: Path) -> None:
+    """The LD19 motor spins whenever its USB port has 5 V; only the hub can stop it."""
+    device = tmp_path / "ugv_lidar"
+    settings = Settings(
+        deploy=tmp_path / "deploy", board=tmp_path / "board", data=tmp_path / "data",
+        lidar_device=device,
+    )  # fmt: skip
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    naps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        naps.append(seconds)
+        if len(naps) == 2:
+            device.write_text("")  # the CP2102 enumerates about a second after power-on
+
+    clock = iter(float(t) for t in range(0, 10**6))
+    ctl = NavCtl(
+        settings, run=run, board=Mock(), clock=lambda: next(clock), echo=lambda _: None, sleep=sleep
+    )
+    assert ctl.lidar == "unknown"
+    ctl.lidar_power(False)
+    assert calls[-1] == ["sudo", "-n", "uhubctl", "-l", "1-1", "-p", "1", "-a", "off"]
+    assert ctl.lidar == "off"
+    ctl.lidar_power(True)  # returns at once: the switch itself is instant
+    assert calls[-1] == ["sudo", "-n", "uhubctl", "-l", "1-1", "-p", "1", "-a", "on"]
+    assert ctl.lidar == "on" and not naps
+    ctl.wait_for_lidar()
+    assert len(naps) == 2
+    device.unlink()
+    with pytest.raises(RuntimeError, match="ugv_lidar"):
+        ctl.wait_for_lidar()
+    assert ctl.lidar == "missing"
+
+
+def test_set_mode_powers_the_lidar_on_first(tmp_path: Path) -> None:
+    device = tmp_path / "ugv_lidar"
+    device.write_text("")
+    settings = Settings(
+        deploy=tmp_path / "deploy", board=tmp_path / "board", data=tmp_path / "data",
+        lidar_device=device,
+    )  # fmt: skip
+    settings.board.mkdir()
+    settings.compose_dir.mkdir(parents=True)
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    ctl = NavCtl(settings, run=run, board=Mock(), echo=lambda _: None, sleep=lambda _: None)
+    ctl.set_mode(mapping=True)
+    order = [c[2] if c[:2] == ["sudo", "-n"] else c[0] for c in calls]
+    assert order.index("uhubctl") < order.index("docker")
+    assert ctl.lidar == "on"
+    # The operator CLI exposes the switch too (lidar on|off).
+    out: list[str] = []
+    ctl.echo = out.append
+    assert main(["lidar", "off"], ctl) == 0
+    assert calls[-1][-1] == "off" and ctl.lidar == "off" and "off" in out[-1]

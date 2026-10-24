@@ -31,6 +31,7 @@ from .navframe import make_packet
 from .pose_process import PoseProcess
 from .protocol import AGENT_PROTOCOL, Lights, Stick
 from .safety import Guard, LeaseError
+from .sleep import SleepPolicy
 from .tof import DEFAULT_BASELINE, ToFLink
 
 LOGGER = logging.getLogger(__name__)
@@ -39,6 +40,8 @@ M2_MICROPHONE = "hw:CARD=XFMDPV0018,DEV=0"
 # reconnects); frames older than 1.5 s are skipped anyway. Was 0.3 s / 0.05 s.
 FRAME_SEND_TIMEOUT = 1.0
 AUDIO_SEND_TIMEOUT = 0.5
+# Sleep mode (tvpet_pi.sleep) is checked this often, Mini connected or not.
+SLEEP_TICK_S = 5.0
 # Safety stops as the map page log shows them (tvpet_pi.nav reasons).
 NAV_STOP_TEXT = {
     "stall_body": "车轮在转但车没动",
@@ -94,6 +97,9 @@ class AgentRuntime:
         self.navd = NavdClient(navd_socket) if nav_dir else None
         self.navd_status: dict[str, Any] | None = None
         self.navd_job_seen = ""
+        # Thirty quiet minutes: lights off, ugv-navd stops the container and cuts the
+        # LiDAR's USB power; the next command (or busy work) wakes it. See sleep_tick().
+        self.sleeper = SleepPolicy()
         # A plain USB microphone has no M2 serial link; set "m2" to "" for it.
         m2_path = str(config.get("m2", "/dev/m2_mic"))
         self.m2 = M2Link(m2_path) if m2_path else None
@@ -179,6 +185,7 @@ class AgentRuntime:
                 else "unknown"
             },
             "tof": self.tof.status() if self.tof else {"state": "disabled"},
+            "power": self.power_status(time.monotonic()),
             "edge": {
                 "state": self.pose.state,
                 "model": "MediaPipe Pose Lite",
@@ -252,9 +259,73 @@ class AgentRuntime:
             with contextlib.suppress(OSError):
                 process.stdin.close()
 
+    async def interaction(self) -> None:
+        """Every console command counts as interaction; the first after a sleep wakes the car."""
+        if self.sleeper.touch(time.monotonic()) == "wake":
+            await self.power_request("wake")
+
+    async def power_request(self, op: str) -> None:
+        """Ask ugv-navd to switch the LiDAR's USB power (standby | wake); refusals are logged."""
+        if self.navd is None:
+            return
+        try:
+            await asyncio.to_thread(self.navd.request, {"op": op})
+        except ValueError as error:
+            LOGGER.warning("%s refused: %s", op, error)
+
+    def busy(self, now: float) -> bool:
+        """Work that keeps the car awake: viewers, listeners, a lease, nav jobs, an unsaved map."""
+        status = self.navd_status or {}
+        job = status.get("job") or {}
+        return (
+            self.video_enabled
+            or self.audio_enabled
+            or self.front_enabled
+            or self.camera.active
+            or (self.playback is not None and self.playback.poll() is None)
+            or bool(self.guard.lease)
+            or now < self.nav_viewers_until
+            or job.get("state") == "running"
+            or (
+                str(status.get("container", "")).startswith("running")
+                and status.get("mode") == "mapping"
+            )
+        )
+
+    async def sleep_tick(self, now: float) -> str | None:
+        """Sleep after the quiet period, and keep ugv-navd's LiDAR power in step with it."""
+        if self.navd is None:
+            return None
+        action = self.sleeper.tick(now, busy=self.busy(now))
+        lidar = (self.navd_status or {}).get("lidar")  # None: ugv-navd is not reachable
+        if action == "sleep":
+            with contextlib.suppress(OSError, ValueError):
+                self.board.set_lights(Lights(base=False, head=False))
+            await self.power_request("standby")
+        elif action == "wake" or (not self.sleeper.asleep and lidar in ("off", "unknown")):
+            await self.power_request("wake")
+        elif self.sleeper.asleep and lidar is not None and lidar != "off":
+            await self.power_request("standby")  # ugv-navd restarted: it forgot
+        return action
+
+    def power_status(self, now: float) -> dict[str, Any]:
+        lidar = (self.navd_status or {}).get("lidar", "unknown")
+        return {**self.sleeper.status(now), "lidar": lidar}
+
+    async def _sleep_loop(self) -> None:
+        while True:
+            try:
+                if self.navd:
+                    self.navd_status = await asyncio.to_thread(self.read_navd)
+                await self.sleep_tick(time.monotonic())
+            except Exception:  # noqa: BLE001 - the sleep keeper must outlive any one failure
+                LOGGER.exception("sleep check failed")
+            await asyncio.sleep(SLEEP_TICK_S)
+
     async def command(self, message: dict[str, Any]) -> None:
         action, args = message.get("action"), message.get("args", {})
         result: dict[str, Any] = {"kind": "result", "id": message.get("id"), "ok": True}
+        await self.interaction()
         try:
             if action in ("stop", "estop"):
                 self.board.stop(emergency=action == "estop")
@@ -576,6 +647,7 @@ class AgentRuntime:
             self.m2.open()
         if self.tof:
             self.tof.open()
+        keeper = asyncio.create_task(self._sleep_loop())
         try:
             while True:
                 tasks: list[asyncio.Task[None]] = []
@@ -628,6 +700,8 @@ class AgentRuntime:
                     self.snapshot_id = ""
                 await asyncio.sleep(2)
         finally:
+            keeper.cancel()
+            await asyncio.gather(keeper, return_exceptions=True)
             self.board.close()
             self.stop_playback()
             if self.m2:

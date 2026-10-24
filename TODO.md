@@ -157,3 +157,14 @@
 - [ ] 实车：传感器装车头前沿（离地 8～12 cm、俯 15～20°），接 XIAO 与 Pi，配置 `tof_port`，停服务后标定，再按 S0-1/S0-2 验收（门槛条、软垫 3 s 内停；起步、原地转向、过地毯各 10 次不误报），据此校准 `tof.py` 阈值。
 - [ ] 待用户决定：ToF 不健康时是否禁止运动（现在只报告）；黑色地毯让地面格返回 4000 时悬崖检测如何处理。
 - [ ] 阶段二：矩阵经本机 socket 给 ugv-nav 发布 PointCloud2 进 Nav2 代价地图；主控台 8×8 热力图。
+
+## 2026-10-25 半小时无交互自动休眠
+
+用户反馈：雷达一直转，很浪费电。LD19 的电机只要 USB 口有 5V 就转，和软件无关（容器停了照样转）。
+
+- [x] ugv-nav 0.6.0：`NavCtl.lidar_power(on)` 用 `uhubctl` 切 VL817 集线器 `1-1` 的 1 号口（雷达的 CP2102）；`set_mode` 先上电并等 `/dev/ugv_lidar` 出现（最多 10 s）再 `compose up`；`ugv-navctl lidar on|off`。navd 新增 `standby`（后台任务：容器在跑则 `compose stop`，再断电；正在建图或有任务时拒绝）和 `wake`（立即上电），`status` 多了 `lidar: on|off|missing|unknown`。
+- [x] Pi 0.11.0：`tvpet_pi.sleep.SleepPolicy`（纯逻辑）+ 代理每 5 s 一次 `sleep_tick`：有命令、有人看视频/听音/前置相机/开地图页、租约在手、在播音、导航任务在跑、容器在建图都算「忙」；安静满 30 分钟关灯并发 `standby`，任何命令先 `wake`。navd 重启后按自己的状态对账（清醒却 off → wake；休眠却非 off → standby）。遥测 `power: {state, idle_seconds, lidar}`。
+- [x] Mini 0.13.10：总览页「设备与边缘计算」多一行「休眠」，横幅在休眠时提示「任何操作都会唤醒」。
+- [x] 实机：`uhubctl` 已装（apt 2.5.0），关 1 号口后 CP2102 消失，开口 6 s 内 `/dev/ugv_lidar` 恢复并有数据。
+- [ ] 用户在车旁确认断电后雷达电机确实停转（集线器是否真切 VBUS 只能听）。
+- [ ] 后续可选：休眠时也停掉前置相机 / 麦克风所在端口；休眠时长可配置；语音唤醒（麦克风不在休眠范围内，仍可用）。

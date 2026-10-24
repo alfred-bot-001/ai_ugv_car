@@ -51,6 +51,8 @@ OP_TEXT = {
     "default": "设为默认地图",
     "route_save": "保存巡航路线",
     "patrol": "开始巡航",
+    "standby": "休眠",
+    "wake": "唤醒",
 }
 
 

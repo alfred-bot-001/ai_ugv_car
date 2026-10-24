@@ -205,9 +205,11 @@ class Runner:
 
 
 def test_navctl_marks_places_zones_and_goes_to_a_place(tmp_path: Path) -> None:
+    (tmp_path / "ugv_lidar").write_text("")
     settings = Settings(
-        deploy=tmp_path / "deploy", board=tmp_path / "board", data=tmp_path / "data"
-    )
+        deploy=tmp_path / "deploy", board=tmp_path / "board", data=tmp_path / "data",
+        lidar_device=tmp_path / "ugv_lidar",
+    )  # fmt: skip
     for folder in (settings.board, settings.compose_dir, settings.maps):
         folder.mkdir(parents=True)
     write_map(settings.maps)

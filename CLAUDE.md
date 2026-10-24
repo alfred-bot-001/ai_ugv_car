@@ -14,10 +14,10 @@
 
 | 目录 | 包 / 版本 | 运行在 |
 | --- | --- | --- |
-| `robot-console/` | `tvpet_console`（ai-tv-pet-console 0.13.1），FastAPI 主控台，网页在 `src/tvpet_console/web/` | Mini（ssh `agent001`） |
-| `pi-agent/` | `tvpet_pi`（ai-tv-pet-pi-agent 0.10.0），设备代理，唯一的底盘 UART 所有者，含导航桥 `nav.py` 和 ToF 读取 `tof.py` | 车上 Pi 5（ssh `agent003`，用户 ws，免密 sudo） |
+| `robot-console/` | `tvpet_console`（ai-tv-pet-console 0.13.10），FastAPI 主控台，网页在 `src/tvpet_console/web/` | Mini（ssh `agent001`） |
+| `pi-agent/` | `tvpet_pi`（ai-tv-pet-pi-agent 0.11.0），设备代理，唯一的底盘 UART 所有者，含导航桥 `nav.py` 和 ToF 读取 `tof.py` | 车上 Pi 5（ssh `agent003`，用户 ws，免密 sudo） |
 | `firmware/tof-bridge/` | Arduino sketch（arduino-cli，`esp32:esp32:XIAO_ESP32C5`） | 车头 XIAO ESP32-C5，USB 接 Pi |
-| `ugv-nav/` | `ugv_nav_tools`（ai-ugv-car-nav-tools 0.5.2）+ ROS2 Humble 容器（SLAM Toolbox、Nav2、RF2O、EKF）+ 主机服务 `ugv-navd` | Pi 的 docker 容器 `ugv-nav` |
+| `ugv-nav/` | `ugv_nav_tools`（ai-ugv-car-nav-tools 0.6.0）+ ROS2 Humble 容器（SLAM Toolbox、Nav2、RF2O、EKF）+ 主机服务 `ugv-navd` | Pi 的 docker 容器 `ugv-nav` |
 
 包名、launchd 标签、systemd 服务名、部署目录**刻意沿用 ai-tv-pet-***，线上部署依赖它们，不要改名。
 
@@ -53,6 +53,7 @@ uv run pytest --cov=tvpet_console --cov=tvpet_pi --cov=ugv_nav_tools --cov-fail-
 - **让车动之前必须确认用户在场、场地已清空**，每次新的运动测试都要重新确认；授权只由 `ugv-navctl` 写 `arm.json`，平时保持 `{"enabled": false}`。
 - 浏览器永远碰不到 ROS 和 UART：不开放 rosbridge / foxglove_bridge，命令一律经 Mini → Pi 代理。
 - 驱动运行时**不要对雷达串口（`/dev/ugv_lidar`，即 ttyUSB0）执行 `stty`**，会把容器里的驱动弄坏。
+- 休眠：Pi 代理半小时无交互（无命令、无人看视频/听音/开地图页、无导航任务、不在建图）就请 `ugv-navd` 执行 `standby`：停导航容器、用 `uhubctl` 切断雷达所在 USB 口（VL817 集线器 `1-1` 的 1 号口）的供电，并把车灯关掉；任何命令立即 `wake` 上电。正在建图（容器在跑且模式为 mapping）时 navd 拒绝休眠，防止丢未保存地图；定位模式会被停掉，醒来后要在地图页重新加载地图。手工开关：`ugv-navctl lidar on|off`。Pi 代理自己在沙箱里不能 sudo，所以开关只经 navd。
 - ttyACM1 是底盘 ESP32 的 USB 串口，绕过 Pi 代理的保护；建议的 root-only udev 规则用户尚未批准，不要擅自加或用它控制车。
 - 运动参数（速度、停车距离、半径）放宽或收紧都要用户批准，并在配置注释里写明日期和理由。
 - 旧机器人服务和旧容器 `ai-home-nav` 保持停用，不作为失败时的降级方案。

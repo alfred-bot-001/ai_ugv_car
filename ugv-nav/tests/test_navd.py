@@ -93,9 +93,11 @@ class Deferred:
 def make_navd(
     tmp_path: Path, replies: dict[str, list[dict[str, Any]]] | None = None, volts: float = 12.0
 ) -> tuple[Navd, FakeRun, Deferred]:
+    (tmp_path / "ugv_lidar").write_text("")  # the LiDAR is plugged in and powered
     settings = Settings(
-        deploy=tmp_path / "deploy", board=tmp_path / "board", data=tmp_path / "data"
-    )
+        deploy=tmp_path / "deploy", board=tmp_path / "board", data=tmp_path / "data",
+        lidar_device=tmp_path / "ugv_lidar",
+    )  # fmt: skip
     settings.board.mkdir()
     settings.compose_dir.mkdir(parents=True)
     settings.maps.mkdir(parents=True)
@@ -560,3 +562,56 @@ def test_a_saved_map_loads_before_navigation_waits_for_the_pose(tmp_path: Path) 
     navd.handle({"op": "pose", "x": 1, "y": 2, "yaw": 0.5})
     deferred.run_all()
     assert navd.job.state == "ok" and navd.job.message == "已设置当前位置，可以「去这里」了"
+
+
+def lidar_calls(run: FakeRun) -> list[str]:
+    return [c[-1] for c in run.calls if c[:3] == ["sudo", "-n", "uhubctl"]]
+
+
+def test_standby_stops_the_container_and_cuts_lidar_power(tmp_path: Path) -> None:
+    """Sleep mode: the LiDAR motor only stops when its hub port loses 5 V."""
+    navd, run, deferred = make_navd(tmp_path)
+    write_map(navd.ctl.settings.maps, "room")
+    localized(navd)
+    assert navd.status()["lidar"] == "unknown"
+    reply = navd.handle({"op": "standby"})
+    assert reply["job"]["op"] == "standby" and reply["job"]["state"] == "running"
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "ok"
+    assert "雷达已断电" in navd.job.message and "导航容器已停止" in navd.job.message
+    assert ["sudo", "-n", "docker", "compose", "stop"] in run.calls
+    assert lidar_calls(run) == ["off"]
+    assert navd.status()["lidar"] == "off"
+
+
+def test_standby_without_a_running_container_only_cuts_power(tmp_path: Path) -> None:
+    navd, run, deferred = make_navd(tmp_path)
+    navd.inspect = lambda _: "exited"
+    navd.container = ("exited", 0.0)
+    navd.handle({"op": "standby"})
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "ok"
+    assert "容器" not in navd.job.message and lidar_calls(run) == ["off"]
+    assert not any(c[-1] == "stop" for c in run.calls if "compose" in c)
+
+
+def test_standby_refuses_while_mapping_or_busy(tmp_path: Path) -> None:
+    navd, run, deferred = make_navd(tmp_path)
+    navd.handle({"op": "mapping"})
+    with pytest.raises(ValueError, match="还没完成"):
+        navd.handle({"op": "standby"})
+    deferred.run_all()  # mapping mode, container running: the map in memory is unsaved
+    with pytest.raises(ValueError, match="正在建图"):
+        navd.handle({"op": "standby"})
+    assert lidar_calls(run) == ["on"]  # only set_mode's power-on
+    assert navd.status()["lidar"] == "on"
+
+
+def test_wake_powers_the_lidar_on_at_once(tmp_path: Path) -> None:
+    navd, run, deferred = make_navd(tmp_path)
+    reply = navd.handle({"op": "wake"})
+    assert reply == {"ok": True, "lidar": "on"}
+    assert lidar_calls(run) == ["on"] and not deferred.pending
+    assert navd.status()["lidar"] == "on"
+    with pytest.raises(ValueError):
+        navd.handle({"op": "wake", "map": "room"})
