@@ -9,7 +9,7 @@ const MAP_COLORS=[[251,252,250,255],[38,58,50,255],[0,0,0,0]];
 let csrf='',stopped=false,toastTimer=null,navSocket=null,navRetry=null,mapGeneration=0;
 let videoSocket=null,videoGeneration=0,videoPending=null,videoPainting=false,videoStale=null,videoSource='front';
 let clockOffset=null,lastStatus={};
-const nav={map:null,mapImage:null,pose:null,trail:[],scan:[],plan:[],state:null,agent:null};
+const nav={map:null,mapImage:null,nextMap:null,pose:null,trail:[],scan:[],plan:[],state:null,agent:null};
 let view={cx:0,cy:0,scale:60,width:0,height:0},follow=true,fitPending=true,dirty=true,dpr=1;
 const layers={scan:true,trail:true,plan:true,grid:false};
 const logKeys=new Set();
@@ -46,7 +46,10 @@ function connectNav(){
 }
 function handlePacket({meta,payload}){
   if(Number.isFinite(meta.stamp)&&(meta.kind==='state'||meta.kind==='agent'))clockOffset=meta.stamp-Date.now()/1000;
-  if(meta.kind==='map'){if(sameSession(meta.session,nav.state?.session))loadMap(meta,payload);}
+  if(meta.kind==='map'){
+    // A new container's map can arrive before its first state packet: keep it until then.
+    if(sameSession(meta.session,nav.state?.session))loadMap(meta,payload);else nav.nextMap={meta,payload};
+  }
   else if(meta.kind==='pose'&&Number.isFinite(meta.x)&&Number.isFinite(meta.y)&&Number.isFinite(meta.yaw)){nav.pose=meta;pushTrail(meta);}
   else if(meta.kind==='scan')nav.scan=Array.isArray(meta.points)?meta.points:[];
   else if(meta.kind==='plan')nav.plan=Array.isArray(meta.points)?meta.points:[];
@@ -55,6 +58,8 @@ function handlePacket({meta,payload}){
     const previous=nav.state?.session??nav.map?.session;
     if(!sameSession(previous,meta.session)){resetMap();nav.pose=null;}
     nav.state=meta;
+    const next=nav.nextMap;
+    if(next&&sameSession(next.meta.session,meta.session)){nav.nextMap=null;loadMap(next.meta,next.payload);}
   }
   else if(meta.kind==='agent')nav.agent=meta;
   else if(meta.kind==='log')addLog(meta);

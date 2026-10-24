@@ -12,7 +12,7 @@ members = [
 
 [[package]]
 name = "ai-tv-pet-console"
-version = "0.13.5"
+version = "0.13.6"
 source = { editable = "robot-console" }
 dependencies = [
     { name = "ai-tv-pet-pi-agent" },
