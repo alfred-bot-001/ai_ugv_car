@@ -72,6 +72,8 @@ ACTIVE_LOGS = (
 STUCK_LOGS = (
     "[lifecycle_manager_localization]: Configuring map_server\n" + ACTIVE_LOGS.split("\n")[1]
 )
+# A saved map before the initial pose: AMCL is up, Nav2's planner waits for the map frame.
+WAITING_FOR_POSE_LOGS = ACTIVE_LOGS.split("\n")[0] + "\n"
 
 
 class Deferred:
@@ -218,6 +220,7 @@ def test_pose_only_on_a_saved_map(tmp_path: Path) -> None:
     deferred.run_all()
     assert navd.job is not None and navd.job.state == "failed" and "建图时" in navd.job.message
     localized(navd)
+    run.container_logs = ACTIVE_LOGS
     navd.handle({"op": "pose", "x": 1, "y": 2, "yaw": 0.5})
     deferred.run_all()
     assert navd.job.state == "ok" and navd.job.result == {"x": 1.0, "y": 2.0, "yaw": 0.5}
@@ -535,3 +538,20 @@ def test_patrol_can_be_cancelled(tmp_path: Path) -> None:
     deferred.run_all()
     assert navd.job is not None and navd.job.state == "cancelled"
     assert navd.job.message.startswith("已取消巡航") and run.armed_during_navigate == []
+
+
+def test_a_saved_map_loads_before_navigation_waits_for_the_pose(tmp_path: Path) -> None:
+    navd, run, deferred = make_navd(tmp_path, {"set-pose": [{"x": 1.0, "y": 2.0, "yaw": 0.5}] * 2})
+    write_map(navd.ctl.settings.maps, "room")
+    run.logs = [WAITING_FOR_POSE_LOGS]
+    navd.handle({"op": "localize", "map": "room"})
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "ok"
+    assert sum(c[-3:] == ["up", "-d", "--force-recreate"] for c in run.calls) == 1  # no retry
+    navd.handle({"op": "pose", "x": 1, "y": 2, "yaw": 0.5})  # navigation never comes up
+    deferred.run_all()
+    assert navd.job.state == "failed" and "导航模块 45 秒内没启动好" in navd.job.message
+    run.container_logs = ACTIVE_LOGS  # after the pose Nav2 finishes its bringup
+    navd.handle({"op": "pose", "x": 1, "y": 2, "yaw": 0.5})
+    deferred.run_all()
+    assert navd.job.state == "ok" and navd.job.message == "已设置当前位置，可以「去这里」了"
