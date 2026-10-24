@@ -574,3 +574,12 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **验证**：pytest 395 项通过，覆盖率 83.8%（排除 main 上已有的两个 Pi 测试问题）；`.mjs` 新增可达性用例；本机预览中，封闭方框里的目标弹出改去最近点，可达目标照常确认。
 - **部署**：ugv-nav 备份 `backups/20261024-pre-0.5.9/`，镜像 0.5.9，主机 `.venv` 0.5.9，`ugv-navd` 重启（容器未重建）。Mini `releases/0.13.7-ai_ugv_car-991d40b/`，`/health` 正常。全程未发运动指令。
 - **回滚**：Mini 装回 `releases/0.13.6-ai_ugv_car-207461e/`；ugv-nav 主机 `.venv` 装回 0.5.8 并重启 `ugv-navd`。
+
+## 2026-10-24 地图页「实时画面」移到右上角（Mini 0.13.8，main `2144b3f`）
+
+用户要求：地图导航页的实时画面放到右上角。
+
+- **改动**：右侧栏顺序改为「实时画面 → 建图与导航 → 车辆状态 → 导航日志」，画面和两个圆盘成为右栏第一块；遥控说明改为「上方实时画面」，手机底栏顺序改为「地图 · 画面 · 控制 · 日志」。只改 `navigation.html`，无接口变化。
+- **验证**：pytest 397 项通过，覆盖率 83.8%；`.mjs` 全过；本机预览桌面宽度下画面在右上。CI 的两个 `test_sso.py` 失败在 main `638132c` 上同样出现，与本次无关。
+- **部署**：备份 `backups/pre-0.13.8-20261024-153955/`（console.sqlite3）；`releases/0.13.8-ai_ugv_car-2144b3f/`（主控台 0.13.8、Pi 代理 0.9.3 未变）；`launchctl bootout/bootstrap` 重启后 `/health` 正常，Pi 代理三条 WSS 自动重连；线上包内页面顺序已核对。全程未发运动指令。
+- **回滚**：停服务后装回 `releases/0.13.7-ai_ugv_car-991d40b/ai_tv_pet_console-0.13.7-py3-none-any.whl` 并重启。
