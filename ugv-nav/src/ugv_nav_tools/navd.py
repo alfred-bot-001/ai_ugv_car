@@ -59,6 +59,10 @@ CONTAINER_CACHE_S = 2.0
 # car (2026-10-23) map_server's reply to "configure" was lost in DDS once and the stack
 # sat unconfigured; one recreate fixed it. So: wait, recreate once, then fail clearly.
 READY_TIMEOUT_S = 90.0
+# On a saved map Nav2's planner waits for the map frame, which AMCL publishes only after
+# the initial pose: the navigation manager comes up after "set pose", not at load time
+# (2026-10-24: requiring it at load time failed every load after two 90 s waits).
+POSE_READY_TIMEOUT_S = 45.0
 READY_POLL_S = 3.0
 MANAGERS = {"navigation": "导航", "localization": "定位"}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -403,7 +407,10 @@ class Navd:
             reached: dict[str, Any] = {
                 k: round(float(reply[k]), 3) for k in ("x", "y", "yaw") if k in reply
             }
-            return "ok", "已设置当前位置", reached
+            if self.wait_ready({"navigation"}, POSE_READY_TIMEOUT_S):
+                message = "已设置位置，但导航模块 45 秒内没启动好；请重新「加载并定位」"
+                return "failed", message, reached
+            return "ok", "已设置当前位置，可以「去这里」了", reached
         summary, message = goal_summary(ctl.goal(pose))
         return ("ok" if summary.get("ok") else "failed"), message, summary
 
@@ -590,7 +597,7 @@ class Navd:
 
     def switch_mode(self, *, mapping: bool, name: str | None = None) -> str:
         """Recreate the container and wait for its lifecycle managers; one retry."""
-        needed = {"navigation"} if mapping else {"navigation", "localization"}
+        needed = {"navigation"} if mapping else {"localization"}
         for attempt in (1, 2):
             self.ctl.set_mode(mapping=mapping, name=name)
             missing = self.wait_ready(needed)
@@ -600,9 +607,9 @@ class Navd:
         names = "、".join(MANAGERS.get(m, m) for m in sorted(missing))
         raise RuntimeError(f"导航容器的{names}模块没能启动，请再试一次")
 
-    def wait_ready(self, needed: set[str]) -> set[str]:
+    def wait_ready(self, needed: set[str], timeout: float = READY_TIMEOUT_S) -> set[str]:
         """Managers still not active when the wait ends (empty when all came up)."""
-        deadline = self.monotonic() + READY_TIMEOUT_S
+        deadline = self.monotonic() + timeout
         while True:
             done = self.ctl.run(
                 ["sudo", "-n", "docker", "logs", self.ctl.settings.container],
