@@ -165,7 +165,9 @@ class BoardBridge(Node):  # type: ignore[misc]
                     "front_min": self.seen.front_min,
                     "wheel_rejected": self.wheels.rejected,
                 }
-                HEALTH_FILE.write_text(json.dumps({"monotonic": now, "age": data["age"]}))
+                # The container healthcheck reads this file instead of running a ROS CLI.
+                health = {"monotonic": now, "age": data["age"], "scan_age": now - self.seen.scan_at}
+                HEALTH_FILE.write_text(json.dumps(health))
                 self.status.publish(String(data=json.dumps(data)))
                 self.last_status = now
         except (BoardError, ValueError, KeyError, TypeError) as error:
