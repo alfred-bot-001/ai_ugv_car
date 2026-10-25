@@ -689,3 +689,4 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
   - Pi：装回 `releases/0.12.0/`，或者回到不带深度的 `releases/0.11.0/`，两个环境都要装；回到 0.11.0 时再用 `backups/20261025-pre-0.12.0/agent.json` 恢复配置，然后重启 `ai-tv-pet-agent`。
   - Mini：装回 `releases/0.13.10-ai_ugv_car-a3dd86d/`，然后 `launchctl bootout/bootstrap`。
   - 运行库目录 `vendor/openni2-arm64/` 放着不影响任何东西；`agent.json` 里去掉 `depth_openni`，深度就关闭了。
+- **用户实看（2026-10-25）**：用户刷新页面后点「深度」，确认能看到深度画面。上面「页面需用户点一次确认」一项已完成。
