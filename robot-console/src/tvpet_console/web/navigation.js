@@ -563,33 +563,36 @@ $('#log-level').onchange=()=>{const warn=$('#log-level').value==='warn';for(cons
 $('#log-clear').onclick=()=>{$('#log-list').replaceChildren();logKeys.clear();$('#log-empty').hidden=false;};
 
 // ---- camera
-function videoState(active){$('#video-toggle').textContent=active?'停止视频':'开启视频';$('#video-state').textContent=active?'实时画面':'未预览';$('#video-state').className='badge '+(active?'':'neutral');$('#video-label').textContent=active?'LIVE · '+(videoSource==='front'?'前置相机':'云台相机'):'预览已关闭';$('#video-placeholder').hidden=active;$('#video-frame').hidden=!active;}
+function videoState(active){$('#video-toggle').textContent=active?'停止视频':'开启视频';$('#video-state').textContent=active?'实时画面':'未预览';$('#video-state').className='badge '+(active?'':'neutral');$('#video-label').textContent=active?'LIVE · '+({front:'前置相机',depth:'深度',video:'云台相机'}[videoSource]):'预览已关闭';$('#video-placeholder').hidden=active;$('#video-frame').hidden=!active;$('#depth-legend').hidden=!(active&&videoSource==='depth');}
 function stopVideo(){videoGeneration++;if(videoSocket){const old=videoSocket;videoSocket=null;old.close();}videoPending=null;clearTimeout(videoStale);videoState(false);}
 async function paintVideo(){
   if(videoPainting)return;videoPainting=true;
-  try{while(videoPending){const {data,generation}=videoPending;videoPending=null;let bitmap=null;
-    try{bitmap=await createImageBitmap(new Blob([data],{type:'image/jpeg'}));if(generation!==videoGeneration||!videoSocket)continue;
+  try{while(videoPending){const {data,generation,source}=videoPending;videoPending=null;let bitmap=null;
+    try{const depth=source==='depth'?parseDepthPacket(data):null;
+      bitmap=await createImageBitmap(new Blob([depth?depth.jpeg:data],{type:'image/jpeg'}));if(generation!==videoGeneration||!videoSocket)continue;
       const frame=$('#video-frame');frame.width=bitmap.width;frame.height=bitmap.height;frame.getContext('2d').drawImage(bitmap,0,0);videoState(true);
-      $('#frame-detail').textContent='新帧 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
+      if(depth){const [near,far]=depthScaleText(depth.meta);$('#depth-near').textContent=near;$('#depth-far').textContent=far;}
+      $('#frame-detail').textContent=depth?depthText(depth.meta):'新帧 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
       clearTimeout(videoStale);videoStale=setTimeout(()=>{if(generation===videoGeneration){$('#video-label').textContent='等待新画面';$('#frame-detail').textContent='视频暂时中断';}},2000);
     }catch(error){if(generation===videoGeneration){toast('视频帧无效');stopVideo();}}finally{bitmap?.close();}}}
   finally{videoPainting=false;}
 }
 function startVideo(){
-  videoGeneration++;const generation=videoGeneration,ws=socket(videoSource);videoSocket=ws;$('#video-placeholder strong').textContent='正在连接摄像头…';
-  ws.onmessage=e=>{if(videoSocket!==ws)return;videoPending={data:e.data,generation};paintVideo();};
+  videoGeneration++;const generation=videoGeneration,source=videoSource,ws=socket(source);videoSocket=ws;$('#video-placeholder strong').textContent='正在连接摄像头…';
+  ws.onmessage=e=>{if(videoSocket!==ws)return;videoPending={data:e.data,generation,source};paintVideo();};
   ws.onclose=()=>{if(videoSocket===ws)stopVideo();};
 }
 $('#video-toggle').onclick=()=>{
   if(videoSocket){stopVideo();return;}
   if(!lastStatus.online){toast('老三离线，无法开启视频');return;}
   if(videoSource==='front'&&lastStatus.state?.front_camera?.state==='disabled'){toast('前置相机还没有配置');return;}
+  if(videoSource==='depth'&&lastStatus.state?.depth_camera?.state==='disabled'){toast('深度相机还没有配置');return;}
   startVideo();
 };
 for(const button of document.querySelectorAll('[data-source]'))button.onclick=()=>{
   if(button.dataset.source===videoSource)return;videoSource=button.dataset.source;
   for(const other of document.querySelectorAll('[data-source]'))other.setAttribute('aria-pressed',String(other===button));
-  $('#camera-caption').textContent=videoSource==='front'?'前置 Orbbec 彩色相机':'云台 USB 摄像头';
+  $('#camera-caption').textContent={front:'前置 Orbbec 彩色相机',depth:'前置 Orbbec 深度 · 颜色表示距离（蓝近红远，黑色是测不到）',video:'云台 USB 摄像头'}[videoSource];
   if(videoSocket){stopVideo();startVideo();}
 };
 

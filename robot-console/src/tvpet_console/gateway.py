@@ -50,8 +50,12 @@ class Gateway:
         self.front_event = asyncio.Condition()
         self.front = b""
         self.front_version = 0
+        # Front Orbbec depth: the whole device packet (distances + colorized JPEG).
+        self.depth_event = asyncio.Condition()
+        self.depth = b""
+        self.depth_version = 0
         self.snapshots: dict[str, asyncio.Future[bytes]] = {}
-        self.viewer_counts = {"video": 0, "audio": 0, "nav": 0, "front": 0}
+        self.viewer_counts = {"video": 0, "audio": 0, "nav": 0, "front": 0, "depth": 0}
         # Map page feed: memory only (the map is the home's floor plan), cleared offline.
         self.nav = NavCache()
         self.nav_event = asyncio.Condition()
@@ -126,6 +130,7 @@ class Gateway:
             self.video = b""
             self.audio = b""
             self.front = b""
+            self.depth = b""
             self.nav.clear()
             self.faces.reset()
             for pending_result in self.pending.values():
@@ -148,6 +153,7 @@ class Gateway:
                     "audio": self.viewer_counts["audio"] > 0,
                     "nav": self.viewer_counts["nav"] > 0,
                     "front": self.viewer_counts["front"] > 0,
+                    "depth": self.viewer_counts["depth"] > 0,
                 }
             )
             await asyncio.sleep(0.2)
@@ -178,6 +184,12 @@ class Gateway:
                     jpeg = packet[4 + size :]
                     if not jpeg.startswith(b"\xff\xd8") or len(jpeg) > MAX_JPEG:
                         raise ValueError("invalid JPEG")
+                    if channel == "depth":
+                        async with self.depth_event:
+                            self.depth = packet
+                            self.depth_version += 1
+                            self.depth_event.notify_all()
+                        continue
                     if channel == "front":
                         async with self.front_event:
                             self.front = jpeg
@@ -247,6 +259,8 @@ class Gateway:
                 self.video = b""
             elif channel == "front":
                 self.front = b""
+            elif channel == "depth":
+                self.depth = b""
             else:
                 self.audio = b""
 
@@ -293,7 +307,7 @@ class Gateway:
         if self.online:
             with contextlib.suppress(ValueError, TimeoutError):
                 await self.rpc("stop")
-            for channel in ("video", "audio", "front"):
+            for channel in ("video", "audio", "front", "depth"):
                 with contextlib.suppress(ValueError, TimeoutError):
                     await self.rpc(
                         "media.set",
@@ -305,6 +319,7 @@ class Gateway:
         self.video = b""
         self.audio = b""
         self.front = b""
+        self.depth = b""
         self.faces.reset(self.background_video)
 
     async def background_capture(self) -> None:

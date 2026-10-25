@@ -40,6 +40,11 @@ module = [
 ]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# tvpet_pi.depth_worker runs in the Pi's pose-venv (OpenCV and the OpenNI2 bindings).
+module = ["cv2", "openni", "openni.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["robot-console/tests", "pi-agent/tests", "ugv-nav/tests"]
 addopts = "--import-mode=importlib"
