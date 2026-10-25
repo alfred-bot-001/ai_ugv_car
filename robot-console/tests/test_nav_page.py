@@ -109,6 +109,21 @@ def test_page_and_feed_need_a_login(client: TestClient) -> None:
     login(client)
     page = client.get("/navigation").text
     assert "激光雷达地图" in page and "/static/navigation.js" in page
+    # The live video panel is the dashboard's (shared video.js): snapshot, lights, fullscreen,
+    # face strip; the saved-map picker sits right under the map, before the control panel.
+    assert page.index("/static/video.js") < page.index("/static/navigation.js")
+    stage = page[page.index('class="video-stage"') : page.index('class="panel-footer"')]
+    for marker in ('id="light-base"', 'id="light-head"', 'id="fullscreen"', 'id="stick-wheels"'):
+        assert marker in stage
+    assert 'id="snapshot"' in page and 'id="face-state"' in page and 'id="camera-format"' in page
+    order = [
+        'id="map-stage"',
+        'id="map-select"',
+        'id="localize"',
+        'id="cancel-nav"',
+        'id="control-heading"',
+    ]
+    assert [page.index(m) for m in order] == sorted(page.index(m) for m in order)
     assert '<a href="/navigation">' in client.get("/").text
 
 

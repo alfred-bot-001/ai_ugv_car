@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('../src/tvpet_console/web/app.js', import.meta.url), 'utf8');
+// The page loads video.js (light state, overlays) before app.js; so does this harness.
+const source = ['video.js', 'app.js'].map(name => fs.readFileSync(new URL('../src/tvpet_console/web/' + name, import.meta.url), 'utf8')).join('\n');
 
 async function checkLogout(statusCode, bodyRace = false) {
   const elements = new Map();

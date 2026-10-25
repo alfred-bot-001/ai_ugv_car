@@ -7,7 +7,7 @@ const $=selector=>document.querySelector(selector);
 const ROBOT_RADIUS=0.17,POSE_STALE_S=3,TRAIL_MAX=300,LOG_MAX=400;
 const MAP_COLORS=[[251,252,250,255],[38,58,50,255],[0,0,0,0]];
 let csrf='',stopped=false,toastTimer=null,navSocket=null,navRetry=null,mapGeneration=0;
-let videoSocket=null,videoGeneration=0,videoPending=null,videoPainting=false,videoStale=null,videoSource='front';
+let videoSocket=null,videoGeneration=0,videoPending=null,videoPainting=false,videoStale=null,videoSource='video';
 let clockOffset=null,lastStatus={};
 const nav={map:null,mapImage:null,nextMap:null,pose:null,trail:[],scan:[],plan:[],state:null,agent:null};
 let view={cx:0,cy:0,scale:60,width:0,height:0},follow=true,fitPending=true,dirty=true,dpr=1;
@@ -31,7 +31,8 @@ async function api(path,body={}){
   if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(typeof data.detail==='string'?data.detail:'操作失败');}
   return response;
 }
-function socket(channel){const ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws/'+channel,['console.v1']);ws.binaryType='arraybuffer';ws.onopen=()=>ws.send(JSON.stringify({csrf}));return ws;}
+async function action(button,callback){if(button.disabled)return;button.disabled=true;button.dataset.busy='1';try{await callback();}catch(error){toast(error.message);}finally{button.dataset.busy='';button.disabled=false;}}
+function socket(channel){const ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws/'+channel,[channel==='video'?'console.video.v2':'console.v1']);ws.binaryType='arraybuffer';ws.onopen=()=>ws.send(JSON.stringify({csrf}));return ws;}
 
 // Seconds on the Pi's clock, estimated from the newest stamped status packet.
 function piNow(){return clockOffset==null?null:Date.now()/1000+clockOffset;}
@@ -540,7 +541,9 @@ async function poll(){
   setText('#status-estop',online?(board.estopped?'已锁定急停':'未锁定'):'—',board.estopped?'fault':'');
   const front=lastStatus.state?.front_camera;
   setText('#status-front',!online||!front?'—':{disabled:'未配置',fault:'故障：'+(front.error||'无法读取'),active:'采集中',available:'已连接',unknown:'未找到设备'}[front.state]||'未知',front?.state==='fault'||front?.state==='unknown'?'fault':'');
-  if(!online&&videoSocket)stopVideo();
+  for(const id of ['video-toggle','snapshot'])if(!$('#'+id).dataset.busy)$('#'+id).disabled=!online;
+  renderLights(board,online);
+  if(!online&&videoSocket)stopVideo();else if(online&&!videoSocket)faceState('idle');
   if(online&&!navSocket)connectNav();
   if(online&&!mapsLoaded)loadMaps();
   if(!online)releaseStick();
@@ -562,29 +565,36 @@ function addLog(meta){
 $('#log-level').onchange=()=>{const warn=$('#log-level').value==='warn';for(const item of $('#log-list').children)item.hidden=warn&&logLevelClass(item.dataset.level)==='info';};
 $('#log-clear').onclick=()=>{$('#log-list').replaceChildren();logKeys.clear();$('#log-empty').hidden=false;};
 
-// ---- camera
+// ---- camera: the dashboard's live video panel (video.js draws the face and pose
+// overlays and knows the light messages); only the page's own status and buttons differ.
 function videoState(active){$('#video-toggle').textContent=active?'停止视频':'开启视频';$('#video-state').textContent=active?'实时画面':'未预览';$('#video-state').className='badge '+(active?'':'neutral');$('#video-label').textContent=active?'LIVE · '+({front:'前置相机',depth:'深度',video:'云台相机'}[videoSource]):'预览已关闭';$('#video-placeholder').hidden=active;$('#video-frame').hidden=!active;$('#depth-legend').hidden=!(active&&videoSource==='depth');}
-function stopVideo(){videoGeneration++;if(videoSocket){const old=videoSocket;videoSocket=null;old.close();}videoPending=null;clearTimeout(videoStale);videoState(false);}
+function clearVideo(){const canvas=$('#video-frame');canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);videoPending=null;clearTimeout(videoStale);}
+function idleFaceText(review){if(!review||review.state==='disabled')return '开启视频后识别家庭成员';if(review.state==='daily_limit')return '今日采样已达上限，明日新加坡时间 00:00 自动恢复';if(review.state==='paused')return '后台本机审核采样已暂停'+(review.error?'：'+review.error:'');return '后台本机审核采样继续运行';}
+function faceState(state,faces=[],milliseconds=null){const badge=$('#face-state');badge.textContent={active:'家庭人脸识别',unavailable:'识别服务暂不可用',disabled:'人脸识别未启用',idle:'人脸预览已关闭',waiting:'等待新画面',front:'前置相机',depth:'深度画面'}[state]||'等待新画面';badge.className='badge '+(state==='active'?'':state==='unavailable'?'warning':'neutral');$('#face-detail').textContent=state==='active'?(faces.length?faces.map(face=>face.label).join(' · '):'画面中未检测到人脸')+(milliseconds!=null?' · '+Math.round(milliseconds)+' ms':''):state==='unavailable'?'视频继续显示，正在重试识别':state==='idle'?idleFaceText(lastStatus.pose_review):state==='front'?'前置相机只显示画面，不做人脸和姿态识别':state==='depth'?'颜色表示距离：蓝近红远，黑色是测不到':'';}
+function stopVideo(){videoGeneration++;if(videoSocket){const old=videoSocket;videoSocket=null;old.close();}clearVideo();videoState(false);faceState('idle');}
 async function paintVideo(){
   if(videoPainting)return;videoPainting=true;
   try{while(videoPending){const {data,generation,source}=videoPending;videoPending=null;let bitmap=null;
-    try{const depth=source==='depth'?parseDepthPacket(data):null;
-      bitmap=await createImageBitmap(new Blob([depth?depth.jpeg:data],{type:'image/jpeg'}));if(generation!==videoGeneration||!videoSocket)continue;
-      const frame=$('#video-frame');frame.width=bitmap.width;frame.height=bitmap.height;frame.getContext('2d').drawImage(bitmap,0,0);videoState(true);
-      if(depth){const [near,far]=depthScaleText(depth.meta);$('#depth-near').textContent=near;$('#depth-far').textContent=far;}
+    try{const front=source==='front',depth=source==='depth'?parseDepthPacket(data):null,packet=front?{meta:{},jpeg:new Uint8Array(data)}:depth?null:parseVideoPacket(data);
+      const meta=packet?packet.meta:{},image=depth?depth.jpeg:packet.jpeg;
+      bitmap=await createImageBitmap(new Blob([image],{type:'image/jpeg'}));if(generation!==videoGeneration||!videoSocket)continue;
+      const canvas=$('#video-frame'),context=canvas.getContext('2d');canvas.width=bitmap.width;canvas.height=bitmap.height;context.drawImage(bitmap,0,0);videoState(true);
+      if(depth){faceState('depth');const [near,far]=depthScaleText(depth.meta);$('#depth-near').textContent=near;$('#depth-far').textContent=far;}
+      else if(front)faceState('front');
+      else{const faces=Array.isArray(meta.faces)?meta.faces.slice(0,16):[];drawPoses(context,meta.pose,bitmap.width,bitmap.height);drawFaces(context,faces,bitmap.width,bitmap.height);faceState(meta.recognition,faces,meta.inference_ms);}
       $('#frame-detail').textContent=depth?depthText(depth.meta):'新帧 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
-      clearTimeout(videoStale);videoStale=setTimeout(()=>{if(generation===videoGeneration){$('#video-label').textContent='等待新画面';$('#frame-detail').textContent='视频暂时中断';}},2000);
-    }catch(error){if(generation===videoGeneration){toast('视频帧无效');stopVideo();}}finally{bitmap?.close();}}}
+      clearTimeout(videoStale);videoStale=setTimeout(()=>{if(generation!==videoGeneration)return;videoGeneration++;clearVideo();videoState(false);$('#video-toggle').textContent='停止视频';$('#video-label').textContent='等待新画面';$('#video-placeholder strong').textContent='视频暂时中断';faceState('waiting');},2000);
+    }catch(error){if(generation===videoGeneration){toast(error.message);stopVideo();}}finally{bitmap?.close();}}}
   finally{videoPainting=false;}
 }
 function startVideo(){
-  videoGeneration++;const generation=videoGeneration,source=videoSource,ws=socket(source);videoSocket=ws;$('#video-placeholder strong').textContent='正在连接摄像头…';
-  ws.onmessage=e=>{if(videoSocket!==ws)return;videoPending={data:e.data,generation,source};paintVideo();};
+  clearVideo();videoGeneration++;$('#video-placeholder strong').textContent='正在连接摄像头…';faceState('waiting');
+  const source=videoSource,ws=socket(source);videoSocket=ws;
+  ws.onmessage=e=>{if(videoSocket!==ws)return;videoPending={data:e.data,generation:videoGeneration,source};paintVideo();};
   ws.onclose=()=>{if(videoSocket===ws)stopVideo();};
 }
 $('#video-toggle').onclick=()=>{
   if(videoSocket){stopVideo();return;}
-  if(!lastStatus.online){toast('老三离线，无法开启视频');return;}
   if(videoSource==='front'&&lastStatus.state?.front_camera?.state==='disabled'){toast('前置相机还没有配置');return;}
   if(videoSource==='depth'&&lastStatus.state?.depth_camera?.state==='disabled'){toast('深度相机还没有配置');return;}
   startVideo();
@@ -592,9 +602,15 @@ $('#video-toggle').onclick=()=>{
 for(const button of document.querySelectorAll('[data-source]'))button.onclick=()=>{
   if(button.dataset.source===videoSource)return;videoSource=button.dataset.source;
   for(const other of document.querySelectorAll('[data-source]'))other.setAttribute('aria-pressed',String(other===button));
-  $('#camera-caption').textContent={front:'前置 Orbbec 彩色相机',depth:'前置 Orbbec 深度 · 颜色表示距离（蓝近红远，黑色是测不到）',video:'云台 USB 摄像头'}[videoSource];
+  $('#camera-caption').textContent={front:'前置 Orbbec 彩色相机 · 只显示画面',depth:'前置 Orbbec 深度 · 颜色表示距离',video:'云台 USB 摄像头 · 人脸与姿态识别'}[videoSource];
+  $('#camera-format').textContent={front:'640 × 480 · 前置相机',depth:'640 × 400 · 约 5 帧/秒 · 深度',video:'640 × 480 · 人脸与姿态识别'}[videoSource];
   if(videoSocket){stopVideo();startVideo();}
 };
+$('#snapshot').onclick=()=>action($('#snapshot'),async()=>{const response=await api('snapshot');const url=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=url;link.download='老三-'+Date.now()+'.jpg';link.click();setTimeout(()=>URL.revokeObjectURL(url),10000);toast('新照片已下载');});
+$('#fullscreen').onclick=()=>$('.video-stage').requestFullscreen?.();
+let lightsPending={};
+function renderLights(board,online){const now=Date.now();for(const name of ['base','head']){const button=$('#light-'+name),on=lightState(name,board.lights,lightsPending,now);button.setAttribute('aria-pressed',String(on));if(!button.dataset.busy)button.disabled=!online||board.state!=='available';button.title=(name==='base'?'底盘前灯':'云台灯')+(on?' · 已开':' · 已关');}}
+for(const name of ['base','head'])$('#light-'+name).onclick=()=>action($('#light-'+name),async()=>{const data=await (await api('control/lights',lightMessage(name,lastStatus.state?.board?.lights))).json();for(const [channel,on] of Object.entries(data.lights||{}))lightsPending[channel]={on,until:Date.now()+LIGHT_HOLD};renderLights(lastStatus.state?.board||{},true);});
 
 // ---- page lifecycle
 function stopAll(){stopped=true;releaseStick();stopVideo();clearTimeout(navRetry);if(navSocket){const old=navSocket;navSocket=null;old.close();}if(controlSocket){const old=controlSocket;controlSocket=null;old.close();}}
