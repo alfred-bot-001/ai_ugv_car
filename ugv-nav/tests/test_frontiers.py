@@ -1,17 +1,25 @@
 """Frontier targets: reachable, clear of walls, facing the unknown, nearest first."""
 
+import itertools
 import math
+import random
 
 import pytest
 
 from ugv_nav_tools.frontiers import (
     CLEARANCE_M,
+    MIN_GAIN_M2,
     Grid,
     candidates,
     explored_m2,
     frontier_clusters,
+    frontier_left,
+    ray_offsets,
     reachable,
+    seen_on_the_way,
     segments,
+    tour,
+    visible_unknown,
     wall_distance,
 )
 
@@ -112,3 +120,89 @@ def test_segments_cut_long_frontiers_by_tile() -> None:
     line = [(c, 0) for c in range(45)]
     assert [len(p) for p in segments(line, 20)] == [20, 20, 5]
     assert segments([(1, 1), (2, 1)], 20) == [[(1, 1), (2, 1)]]
+
+
+def test_gain_counts_unknown_a_scan_would_reach() -> None:
+    rays = ray_offsets(RES)
+    assert visible_unknown(room(door=None), 20, 15, rays) == 0  # walls all round
+    open_door = room()
+    near, far = visible_unknown(open_door, 32, 15, rays), visible_unknown(open_door, 8, 15, rays)
+    assert near > far > 0  # the doorway's view widens as the car comes close
+    door = {r * open_door.width + 40 for r in range(11, 19)}
+    assert visible_unknown(open_door, 32, 15, rays, through=door) == near
+    assert visible_unknown(open_door, 32, 15, rays, through={0}) == 0  # not through here
+
+
+def test_a_frontier_onto_a_small_pocket_is_not_worth_a_leg() -> None:
+    rows = []
+    for r in range(30):
+        line = ""
+        for c in range(52):
+            if c > 40:
+                line += "?"
+            elif r in (0, 29) or c in (0, 40):
+                line += "." if c == 40 and 12 <= r < 18 else "#"
+            elif 12 <= r < 18 and 8 <= c < 12:
+                line += "?"  # 20 x 30 cm under a cupboard: 0.06 m2
+            else:
+                line += "."
+        rows.append(line)
+    targets = candidates(grid_from(rows), robot=(1.0, 0.75))
+    assert targets and all(t.x > 1.2 for t in targets)  # only towards the doorway
+    assert all(t.gain_m2 >= MIN_GAIN_M2 for t in targets)
+
+
+def corridor() -> Grid:
+    """8 m x 1.2 m corridor, unknown past both ends and above a 45 cm opening at x 2.5 m."""
+    rows = []
+    for r in range(41):
+        line = ""
+        for c in range(161):
+            if c < 4 or c > 156 or r > 25:
+                line += "?"
+            elif r == 0 or (r == 25 and not 46 <= c <= 54):
+                line += "#"
+            else:
+                line += "."
+        rows.append(line)
+    return grid_from(list(reversed(rows)))  # row 0 of the list is the top
+
+
+def test_the_tour_not_the_nearest_target_comes_first() -> None:
+    targets = candidates(corridor(), robot=(2.0, 0.6))
+    assert len(targets) == 3
+    nearest = min(targets, key=lambda t: t.travel_m)
+    assert 2.2 < nearest.x < 2.8  # the side opening is closest ...
+    assert targets[0].x < 1.0  # ... but the left end first saves walking back past it
+    assert targets[-1].x > 7.0
+
+
+def path_length(
+    order: tuple[int, ...] | list[int], start: list[float], between: list[list[float]]
+) -> float:
+    return start[order[0]] + sum(between[a][b] for a, b in zip(order, order[1:], strict=False))
+
+
+def test_tour_is_exact() -> None:
+    # On a line: start at 0, stops at +1, -1.5, +3, +4. Nearest-first walks 9 m, the
+    # tour 7 m (left first).
+    xs = [1.0, -1.5, 3.0, 4.0]
+    between = [[abs(a - b) for b in xs] for a in xs]
+    assert tour([abs(x) for x in xs], between) == [1, 0, 2, 3]
+    rng = random.Random(7)
+    for n in range(1, 7):
+        points = [(rng.uniform(-3, 3), rng.uniform(-3, 3)) for _ in range(n)]
+        start = [math.hypot(*p) for p in points]
+        between = [[math.dist(p, q) for q in points] for p in points]
+        best = min(path_length(p, start, between) for p in itertools.permutations(range(n)))
+        assert path_length(tour(start, between), start, between) == pytest.approx(best)
+    assert tour([], []) == []
+    assert tour([1.0, 2.0], [[0, math.inf], [math.inf, 0]]) == [0, 1]  # cut off: by distance
+
+
+def test_a_frontier_mapped_on_the_way_ends_the_leg() -> None:
+    open_door = room()
+    assert frontier_left(open_door, 2.0, 0.75) == pytest.approx(6 * RES)  # the doorway
+    assert not seen_on_the_way(open_door, 2.0, 0.75)
+    assert seen_on_the_way(room(door=None), 2.0, 0.75)  # nothing left there
+    assert seen_on_the_way(open_door, -3.0, 0.0)  # off the map

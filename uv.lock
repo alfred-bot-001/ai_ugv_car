@@ -67,7 +67,7 @@ requires-dist = [
 
 [[package]]
 name = "ai-ugv-car-nav-tools"
-version = "0.7.1"
+version = "0.8.0"
 source = { editable = "ugv-nav" }
 
 [[package]]
