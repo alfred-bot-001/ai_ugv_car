@@ -284,15 +284,27 @@ class NavCtl:
         self.disarm()
         self.json_op("cancel")
 
-    def goal(self, pose: Pose, battery_gate: float = BATTERY_START_V) -> dict[str, Any]:
-        """Plan, then drive to one pose inside one arm window; low battery refuses to arm."""
+    def goal(
+        self,
+        pose: Pose,
+        battery_gate: float = BATTERY_START_V,
+        watch_frontier: tuple[float, float] | None = None,
+    ) -> dict[str, Any]:
+        """Plan, then drive to one pose inside one arm window; low battery refuses to arm.
+
+        watch_frontier (exploration): the leg may end early with "seen" in the result
+        once the frontier around that point has been mapped on the way.
+        """
         self.disarm()
         self.json_op("cancel")
         self.check_battery(battery_gate)
+        watch = []
+        if watch_frontier is not None:
+            watch = ["--watch-frontier", f"{watch_frontier[0]:.3f},{watch_frontier[1]:.3f}"]
         with self.armed():
             return self.json_op(
                 "navigate", str(pose.x), str(pose.y), str(pose.yaw),
-                "--timeout", str(NAVIGATE_TIMEOUT),
+                "--timeout", str(NAVIGATE_TIMEOUT), *watch,
             )  # fmt: skip
 
     def current_map(self) -> str:

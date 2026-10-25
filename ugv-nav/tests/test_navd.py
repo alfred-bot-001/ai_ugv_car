@@ -370,7 +370,10 @@ def mapping_env(navd: Navd) -> None:
 
 
 def frontier(*targets: tuple[float, float], area: float = 4.2) -> dict[str, Any]:
-    found = [{"x": x, "y": y, "yaw": 0.5, "frontier_m": 0.6, "travel_m": 1.0} for x, y in targets]
+    found = [
+        {"x": x, "y": y, "yaw": 0.5, "frontier_m": 0.6, "travel_m": 1.0, "fx": x + 0.4, "fy": y}
+        for x, y in targets
+    ]
     return {"ok": True, "explored_m2": area, "candidates": found}
 
 
@@ -385,9 +388,38 @@ def test_explore_drives_frontier_to_frontier_until_none_is_left(tmp_path: Path) 
     deferred.run_all()
     assert navd.job is not None and navd.job.state == "ok"
     assert navd.job.message.startswith("探索结束") and "8.5 m²" in navd.job.message
-    assert navd.job.result == {"legs": 2, "reached": 2, "explored_m2": 8.5, "target": None}
+    assert navd.job.result == {
+        "legs": 2,
+        "reached": 2,
+        "seen_early": 0,
+        "explored_m2": 8.5,
+        "target": None,
+    }
     assert run.armed_during_navigate == [True, True]
     assert json.loads((navd.ctl.settings.board / "arm.json").read_text()) == {"enabled": False}
+    navigate = [c for c in run.calls if "navigate" in c]
+    # Exploration legs watch their frontier piece and may end early.
+    assert [c[-2:] for c in navigate] == [
+        ["--watch-frontier", "1.400,0.000"],
+        ["--watch-frontier", "2.400,1.000"],
+    ]
+
+
+def test_explore_counts_a_frontier_mapped_on_the_way_as_done(tmp_path: Path) -> None:
+    seen = {"ok": False, "seen": {"frontier_left_m": 0.1}, "error_m": 0.8}
+    replies = {
+        "frontier": [frontier((1, 0)), frontier((1, 0)), frontier((2, 1)), frontier()],
+        "navigate": [seen, seen, {"ok": True}],
+    }
+    navd, run, deferred = make_navd(tmp_path, replies)
+    mapping_env(navd)
+    navd.handle({"op": "explore"})
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "ok"
+    assert navd.job.result["legs"] == 3 and navd.job.result["reached"] == 3
+    assert navd.job.result["seen_early"] == 2
+    frontier_calls = [c for c in run.calls if "frontier" in c]
+    assert not any("--avoid" in " ".join(c) for c in frontier_calls)  # not a failure
 
 
 def test_explore_avoids_failed_targets_and_stops_on_a_safety_stop(tmp_path: Path) -> None:

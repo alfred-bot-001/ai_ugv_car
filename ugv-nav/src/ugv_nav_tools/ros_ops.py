@@ -1,7 +1,9 @@
 """In-container ROS operations for ugv-navctl: pose, set-pose, cancel, navigate, frontier.
 
 Prints one JSON object. `navigate` plans first and only sends a NavigateToPose goal if
-planning succeeds; it never arms motion (the host writes pi-agent's arm file).
+planning succeeds; it never arms motion (the host writes pi-agent's arm file). With
+--watch-frontier FX,FY (exploration) it ends the goal early, reporting "seen", once the
+frontier around (FX, FY) the goal was chosen for has been mapped on the way.
 """
 
 from __future__ import annotations
@@ -26,13 +28,15 @@ from tf2_ros import Buffer, TransformListener
 
 from .board_client import BoardClient, BoardError
 from .bridge_node import SOCKET
-from .frontiers import Grid, candidates, explored_m2
+from .frontiers import Grid, candidates, explored_m2, frontier_left, seen_on_the_way
 from .route import Pose, goal_errors, quaternion_to_yaw, within_tolerance, yaw_to_quaternion
 
 SUCCEEDED = 4
 SEND_ATTEMPTS = 2
 # How often navigate() asks pi-agent for a latched safety stop (stall, localization).
 FAULT_POLL_S = 0.5
+# How often navigate --watch-frontier looks at the newest map (SLAM publishes every 1 s).
+WATCH_POLL_S = 2.0
 # Humble/FastDDS: a request sent right after discovery can lose its response because the
 # reply reader is not matched yet. Spin briefly after discovery before the first call.
 MATCH_SETTLE_S = 0.5
@@ -49,6 +53,20 @@ def latched_fault(board: BoardClient, since: float) -> dict[str, Any] | None:
         return board.fault(since)
     except BoardError:
         return None
+
+
+def to_grid(message: Any) -> Grid:
+    info = message.info
+    if abs(info.origin.orientation.z) > 1e-6:
+        raise ValueError("rotated map origin is not supported")
+    return Grid(
+        info.width,
+        info.height,
+        info.resolution,
+        info.origin.position.x,
+        info.origin.position.y,
+        list(message.data),
+    )
 
 
 class Operator:
@@ -98,15 +116,24 @@ class Operator:
         self.spin(3.0)
         return self.pose()
 
-    def latest_map(self, timeout: float = 6.0) -> Any:
-        """The map SLAM or map_server last published (latched)."""
+    def watch_map(self) -> list[Any]:
+        """A list that always holds the newest map SLAM or map_server published (latched)."""
         received: list[Any] = []
         qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             reliability=ReliabilityPolicy.RELIABLE,
         )
-        self.node.create_subscription(OccupancyGrid, "map", received.append, qos)
+
+        def keep(message: Any) -> None:
+            received[:] = [message]
+
+        self.node.create_subscription(OccupancyGrid, "map", keep, qos)
+        return received
+
+    def latest_map(self, timeout: float = 6.0) -> Any:
+        """The map SLAM or map_server last published (latched)."""
+        received = self.watch_map()
         end = time.monotonic() + timeout
         while not received and time.monotonic() < end:
             rclpy.spin_once(self.node, timeout_sec=0.05)
@@ -115,19 +142,8 @@ class Operator:
         return received[-1]
 
     def frontier(self, avoid: list[tuple[float, float]]) -> dict[str, Any]:
-        """Exploration targets on the current map, nearest reachable first."""
-        message = self.latest_map()
-        info = message.info
-        if abs(info.origin.orientation.z) > 1e-6:
-            raise ValueError("rotated map origin is not supported")
-        grid = Grid(
-            info.width,
-            info.height,
-            info.resolution,
-            info.origin.position.x,
-            info.origin.position.y,
-            list(message.data),
-        )
+        """Exploration viewpoints on the current map, in shortest-tour order."""
+        grid = to_grid(self.latest_map())
         pose = self.pose()
         targets = candidates(grid, (pose.x, pose.y), avoid=avoid)
         return {
@@ -160,8 +176,11 @@ class Operator:
         goal.pose.orientation.z, goal.pose.orientation.w = yaw_to_quaternion(pose.yaw)
         return goal
 
-    def navigate(self, goal: Pose, timeout: float) -> dict[str, Any]:
+    def navigate(
+        self, goal: Pose, timeout: float, watch: tuple[float, float] | None = None
+    ) -> dict[str, Any]:
         start = self.pose()
+        maps = self.watch_map() if watch else []
         planner = ActionClient(self.node, ComputePathToPose, "compute_path_to_pose")
         if not planner.wait_for_server(timeout_sec=10):
             raise RuntimeError("planner unavailable")
@@ -205,7 +224,7 @@ class Operator:
         started = time.monotonic()
         started_wall = time.time()
         board = BoardClient(SOCKET)
-        next_check = started
+        next_check = next_watch = started
         try:
             while not future.done() and time.monotonic() - started < timeout:
                 rclpy.spin_once(self.node, timeout_sec=0.05)
@@ -215,9 +234,16 @@ class Operator:
                     if fault:
                         result["fault"] = fault  # stop waiting; the goal is cancelled below
                         break
+                if watch and maps and time.monotonic() >= next_watch:
+                    next_watch = time.monotonic() + WATCH_POLL_S
+                    grid = to_grid(maps[-1])
+                    if seen_on_the_way(grid, *watch):
+                        # Mapped on the way: stop here (cancelled below), plan the next one.
+                        result["seen"] = {"frontier_left_m": frontier_left(grid, *watch)}
+                        break
             if future.done():
                 result["navigation_status"] = future.result().status
-            else:
+            elif "seen" not in result:
                 result["timeout"] = True
         finally:
             if not future.done():
@@ -249,6 +275,9 @@ def main() -> None:
         command.add_argument("y", type=float)
         command.add_argument("yaw", type=float)
     sub.choices["navigate"].add_argument("--timeout", type=float, default=110.0)
+    sub.choices["navigate"].add_argument(
+        "--watch-frontier", metavar="FX,FY", help="exploration: stop once this frontier is mapped"
+    )
     frontier = sub.add_parser("frontier")
     frontier.add_argument("--avoid", action="append", default=[], help="X,Y of a failed target")
     args = parser.parse_args()
@@ -268,7 +297,12 @@ def main() -> None:
             if not 1 <= args.timeout <= 110:
                 raise ValueError("timeout must be 1..110 s (pi-agent arms at most 120 s)")
             try:
-                output = operator.navigate(Pose(args.x, args.y, args.yaw), args.timeout)
+                goal = Pose(args.x, args.y, args.yaw)
+                watch = None
+                if args.watch_frontier:
+                    fx, _, fy = args.watch_frontier.partition(",")
+                    watch = (float(fx), float(fy))
+                output = operator.navigate(goal, args.timeout, watch)
             except Exception as error:  # noqa: BLE001 - report every failure as JSON
                 output = {"ok": False, "error": f"{type(error).__name__}: {error}"}
                 try:

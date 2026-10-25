@@ -94,8 +94,10 @@ OPS: tuple[str, ...] = (
     "wake",
 ) + MAP_ADMIN
 # Exploration (map page "自动探索"): frontier legs, each one ordinary goal with its own
-# bounded arm window and battery gate. It ends when no frontier is left, on a safety
-# stop, on cancel, after three legs in a row fail, or at these caps.
+# bounded arm window and battery gate. Each leg goes to the first viewpoint of the
+# shortest tour (ugv_nav_tools.frontiers) and ends early once its frontier has been
+# mapped on the way. It ends when no frontier is left, on a safety stop, on cancel,
+# after three legs in a row fail, or at these caps.
 EXPLORE_MAX_LEGS = 30
 EXPLORE_MAX_S = 20 * 60.0
 EXPLORE_MAX_FAILURES = 3
@@ -526,7 +528,13 @@ class Navd:
             raise ValueError("自动探索只能在建图时进行；先点「开始建图」")
         started = self.monotonic()
         failures, avoid = 0, list[tuple[float, float]]()
-        summary: dict[str, Any] = {"legs": 0, "reached": 0, "explored_m2": None, "target": None}
+        summary: dict[str, Any] = {
+            "legs": 0,
+            "reached": 0,
+            "seen_early": 0,
+            "explored_m2": None,
+            "target": None,
+        }
         while True:
             if self.cancel_event.is_set():
                 return "cancelled", "已取消探索，小车已停下", summary | {"target": None}
@@ -545,14 +553,17 @@ class Navd:
                     "窄处请用遥控补图，记得保存地图",
                     (summary | {"target": None}),
                 )
-            target = targets[0]
-            summary["target"] = {k: target[k] for k in ("x", "y", "yaw")}
+            target = targets[0]  # the first stop of the shortest tour
+            summary["target"] = {k: target[k] for k in ("x", "y", "yaw", "gain_m2") if k in target}
             self.progress(summary)
             gate = BATTERY_START_V if summary["legs"] == 0 else BATTERY_LEG_V
-            result = ctl.goal(Pose(target["x"], target["y"], target["yaw"]), battery_gate=gate)
+            pose = Pose(target["x"], target["y"], target["yaw"])
+            watch = (target["fx"], target["fy"]) if "fx" in target and "fy" in target else None
+            result = ctl.goal(pose, battery_gate=gate, watch_frontier=watch)
             summary["legs"] += 1
-            if result.get("ok"):
+            if result.get("ok") or (result.get("seen") and not result.get("fault")):
                 summary["reached"] += 1
+                summary["seen_early"] += not result.get("ok")
                 failures = 0
             else:
                 fault = result.get("fault")
