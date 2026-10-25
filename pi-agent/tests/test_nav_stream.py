@@ -63,8 +63,10 @@ def test_relay_socket_keeps_good_packets_and_drops_bad_framing() -> None:
         stream = NavStream(Path(short), closed)
         thread = stream.start()
         path = Path(short) / "stream.sock"
-        for _ in range(50):
-            if path.exists():
+        deadline = time.monotonic() + 2
+        # The socket exists from bind() and is 0600 one step later (os.chmod).
+        while time.monotonic() < deadline:
+            if path.exists() and path.stat().st_mode & 0o777 == 0o600:
                 break
             time.sleep(0.01)
         assert path.stat().st_mode & 0o777 == 0o600

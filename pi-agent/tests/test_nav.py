@@ -278,7 +278,10 @@ def test_socket_round_trip_and_permissions(rig: tuple[NavBridge, Mock]) -> None:
         nav.start()
         path = nav.root / "board.sock"
         deadline = time.monotonic() + 2
-        while not path.exists() and time.monotonic() < deadline:
+        # The socket exists from bind() and is 0600 one step later (os.chmod).
+        while time.monotonic() < deadline:
+            if path.exists() and path.stat().st_mode & 0o777 == 0o600:
+                break
             time.sleep(0.01)
         assert path.stat().st_mode & 0o777 == 0o600
         with socket.socket(socket.AF_UNIX) as client:
