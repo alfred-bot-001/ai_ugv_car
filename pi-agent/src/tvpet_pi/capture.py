@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .protocol import MAX_JPEG
 
@@ -176,10 +177,14 @@ class Microphone:
             self.process = None
 
 
+if TYPE_CHECKING:
+    from .depth import DepthCamera
+
+
 class CaptureWorker:
     """Thread owns its adapter; only newest sample is held, never an unbounded queue."""
 
-    def __init__(self, adapter: Camera | Microphone) -> None:
+    def __init__(self, adapter: "Camera | Microphone | DepthCamera") -> None:
         self.adapter = adapter
         self.value: Frame | bytes | None = None
         self.version = 0

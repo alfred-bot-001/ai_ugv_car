@@ -22,6 +22,7 @@ from websockets.exceptions import WebSocketException
 from websockets.typing import Subprotocol
 
 from .capture import Camera, CaptureWorker, Frame, Microphone
+from .depth import DepthCamera, DepthFrame
 from .hardware import Board, system_status
 from .m2 import M2Link
 from .nav import NavBridge
@@ -108,6 +109,15 @@ class AgentRuntime:
         self.front_path = str(config.get("front_camera", ""))
         self.front_camera = CaptureWorker(Camera(self.front_path)) if self.front_path else None
         self.front_enabled = False
+        # Front Orbbec depth through OpenNI2 in pose-venv; needs depth_openni and pose_python.
+        self.depth_openni = str(config.get("depth_openni", ""))
+        pose_python = str(config.get("pose_python", ""))
+        self.depth_camera = (
+            CaptureWorker(DepthCamera(pose_python, self.depth_openni))
+            if self.depth_openni and pose_python
+            else None
+        )
+        self.depth_enabled = False
         self.microphone_device = str(config.get("microphone", M2_MICROPHONE))
         self.microphone = CaptureWorker(Microphone(self.microphone_device))
         self.speaker_device = str(config.get("speaker", "plughw:CARD=Device,DEV=0"))
@@ -161,6 +171,19 @@ class AgentRuntime:
                 else "unknown",
                 "error": self.front_camera.error if self.front_camera else "",
                 "format": "Orbbec 彩色 · MJPEG 640×480 / 10fps",
+            },
+            "depth_camera": {
+                "state": "disabled"
+                if self.depth_camera is None
+                else "fault"
+                if self.depth_camera.error
+                else "active"
+                if self.depth_camera.active
+                else "available"
+                if (Path(self.depth_openni) / "libOpenNI2.so").exists()
+                else "unknown",
+                "error": self.depth_camera.error if self.depth_camera else "",
+                "format": "Orbbec 深度 · 640×400 / 5fps",
             },
             "microphone": {
                 "state": "fault"
@@ -281,6 +304,7 @@ class AgentRuntime:
             self.video_enabled
             or self.audio_enabled
             or self.front_enabled
+            or self.depth_enabled
             or self.camera.active
             or (self.playback is not None and self.playback.poll() is None)
             or bool(self.guard.lease)
@@ -341,15 +365,19 @@ class AgentRuntime:
                 result["lights"] = self.board.set_lights(Lights.model_validate(args))
             elif action == "media.set":
                 channel, enabled = args.get("channel"), args.get("enabled") is True
-                if channel not in ("video", "audio", "front"):
+                if channel not in ("video", "audio", "front", "depth"):
                     raise ValueError("unknown media channel")
                 if channel == "front" and self.front_camera is None:
                     raise ValueError("front camera is not configured")
+                if channel == "depth" and self.depth_camera is None:
+                    raise ValueError("depth camera is not configured")
                 worker = self._worker(str(channel))
                 if channel == "video":
                     self.video_enabled = enabled
                 elif channel == "front":
                     self.front_enabled = enabled
+                elif channel == "depth":
+                    self.depth_enabled = enabled
                 else:
                     self.audio_enabled = enabled
                 if enabled and not worker.active:
@@ -418,7 +446,12 @@ class AgentRuntime:
         return status
 
     def _worker(self, channel: str) -> CaptureWorker:
-        worker = {"video": self.camera, "audio": self.microphone, "front": self.front_camera}
+        worker = {
+            "video": self.camera,
+            "audio": self.microphone,
+            "front": self.front_camera,
+            "depth": self.depth_camera,
+        }
         selected = worker.get(channel)
         if selected is None:
             raise ValueError("unknown media channel")
@@ -436,6 +469,8 @@ class AgentRuntime:
                     self.microphone.renew()
                 if message.get("front") is True and self.front_enabled and self.front_camera:
                     self.front_camera.renew()
+                if message.get("depth") is True and self.depth_enabled and self.depth_camera:
+                    self.depth_camera.renew()
                 if message.get("nav") is True:
                     self.nav_viewers_until = time.monotonic() + 1.5
             elif message.get("kind") == "command":
@@ -502,10 +537,11 @@ class AgentRuntime:
             version, value = worker.latest()
             if value is not None and version != last:
                 last = version
-                if isinstance(value, Frame) and channel == "front":
+                if isinstance(value, Frame) and channel in ("front", "depth"):
                     started = time.monotonic()
+                    extra = value.meta if isinstance(value, DepthFrame) else {}
                     metadata = json.dumps(
-                        {"sequence": value.sequence, "timestamp_ns": value.timestamp_ns}
+                        {**extra, "sequence": value.sequence, "timestamp_ns": value.timestamp_ns}
                     ).encode()
                     await asyncio.wait_for(
                         socket.send(struct.pack("!I", len(metadata)) + metadata + value.jpeg),
@@ -549,6 +585,8 @@ class AgentRuntime:
                 if worker.active and time.monotonic() >= self.snapshot_until:
                     await asyncio.to_thread(worker.stop)
             if channel == "front" and not self.front_enabled and worker.active:
+                await asyncio.to_thread(worker.stop)
+            if channel == "depth" and not self.depth_enabled and worker.active:
                 await asyncio.to_thread(worker.stop)
             await asyncio.sleep(0.005)
 
@@ -677,6 +715,9 @@ class AgentRuntime:
                             tasks.append(asyncio.create_task(self._nav_channel(link, tls, token)))
                         if self.front_camera:
                             tasks.append(asyncio.create_task(self._front_channel(link, tls, token)))
+                        if self.depth_camera:
+                            depth = self._media_channel("depth", link, tls, token, retry=5)
+                            tasks.append(asyncio.create_task(depth))
                         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                         for task in done:
                             task.result()
@@ -696,7 +737,10 @@ class AgentRuntime:
                     await asyncio.to_thread(self.microphone.stop)
                     if self.front_camera:
                         await asyncio.to_thread(self.front_camera.stop)
+                    if self.depth_camera:
+                        await asyncio.to_thread(self.depth_camera.stop)
                     self.video_enabled = self.audio_enabled = self.front_enabled = False
+                    self.depth_enabled = False
                     self.snapshot_id = ""
                 await asyncio.sleep(2)
         finally:

@@ -759,7 +759,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.websocket("/ws/{channel}")
     async def media_socket(websocket: WebSocket, channel: str) -> None:
-        if channel not in ("video", "audio", "front"):
+        if channel not in ("video", "audio", "front", "depth"):
             await websocket.close(code=1008)
             return
         auth = await browser_auth(websocket, video=channel == "video")
@@ -782,6 +782,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if channel == "video"
                 else gateway.front_event
                 if channel == "front"
+                else gateway.depth_event
+                if channel == "depth"
                 else gateway.audio_event
             )
             last = -1
@@ -798,6 +800,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         if channel == "video"
                         else gateway.front_version
                         if channel == "front"
+                        else gateway.depth_version
+                        if channel == "depth"
                         else gateway.audio_version
                     )
                     data = (
@@ -807,6 +811,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         if channel == "video"
                         else gateway.front
                         if channel == "front"
+                        else gateway.depth
+                        if channel == "depth"
                         else gateway.audio
                     )
                     if version == last or not data:
@@ -832,7 +838,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def agent_socket(websocket: WebSocket, agent_id: str, channel: str) -> None:
         token = websocket.headers.get("authorization", "").removeprefix("Bearer ")
         allowed = (
-            channel in ("control", "video", "audio", "nav", "front")
+            channel in ("control", "video", "audio", "nav", "front", "depth")
             and agent_id == settings.agent_id
             and store.agent_valid(agent_id, token)
             and AGENT_PROTOCOL in websocket.headers.get("sec-websocket-protocol", "")
