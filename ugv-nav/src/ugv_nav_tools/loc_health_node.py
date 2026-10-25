@@ -31,6 +31,7 @@ from .stall import Pose2D
 
 PERIOD_S = 0.2
 STOP_REASON = "localization_lost"
+BASE_FRAME = "base_footprint"  # slam.yaml base_frame / ekf_laser.yaml base_link_frame
 
 
 def yaw_of(q: Any) -> float:
@@ -65,12 +66,15 @@ class LocHealthNode(Node):  # type: ignore[misc]
     def on_amcl(self, message: Any) -> None:
         self.health.on_covariance(list(message.pose.covariance))
 
-    def pose_in_map(self, frame: str) -> Pose2D | None:
+    def pose_in(self, parent: str, frame: str) -> Pose2D | None:
         try:
-            t = self.tf.lookup_transform("map", frame, Time()).transform
+            t = self.tf.lookup_transform(parent, frame, Time()).transform
         except Exception:  # noqa: BLE001 - no transform yet means nothing to judge
             return None
         return Pose2D(t.translation.x, t.translation.y, yaw_of(t.rotation))
+
+    def pose_in_map(self, frame: str) -> Pose2D | None:
+        return self.pose_in("map", frame)
 
     def match(self) -> float | None:
         scan, grid = self.scan, self.grid
@@ -104,7 +108,11 @@ class LocHealthNode(Node):  # type: ignore[misc]
         now = time.monotonic()
         odom = self.pose_in_map("odom")
         if odom is not None:
-            self.health.on_transform(Stamped(now, odom))
+            # Judge the correction where the robot is; without odom->base the odom
+            # origin stands in, as before 2026-10-25.
+            robot = self.pose_in("odom", BASE_FRAME)
+            at = (robot.x, robot.y) if robot is not None else (0.0, 0.0)
+            self.health.on_transform(Stamped(now, odom, at))
         self.ratio = self.match()
         self.health.on_match(now, self.ratio)
         reason = self.health.reason
