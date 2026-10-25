@@ -732,3 +732,37 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **验证（证书与 Nginx 部分，2026-10-25 12:50）**：Mini 本机和局域网内另一台 Mac 用 `curl --resolve car.aimaker.vip:443:192.168.1.123`（系统 CA，不加 `-k`）访问 `/health`：200，`ssl_verify_result=0`，15～17 ms；`s_client` 看到 car 的 SNI 返回 Let's Encrypt 证书，tvpet 的 SNI 仍是自签；公网经 Cloudflare `/health` 200。未登录的 `/ws/video`、`/ws/control` 局域网返回 403（TLS 正常）；`/` 返回 303 到 SSO 登录。dnsmasq：`dig @192.168.1.123 car.aimaker.vip` 得 `192.168.1.123`，其他域名正常转发，本机查询约 10 ms。
 - **备份与回滚**：改动前的 `unified-gateway.conf`、`nginx.conf`、`/etc/hosts`、旧证书、`scutil --dns` 快照和 dnsmasq 默认配置在 `/Users/agent001/workspace-agent/deploy/backups/20261025-lan-direct/`。回滚证书：把备份的 `unified-gateway.conf` 复制回 `/opt/homebrew/etc/nginx/servers/` 后 `nginx -t && nginx -s reload`；回滚分流：路由器 DHCP 的 DNS 改回原值并让设备重连，Mini 上 `sudo brew services stop dnsmasq`（要彻底去掉就 `brew uninstall dnsmasq`，并删除主配置末尾的 `conf-dir` 行）；停续期：`launchctl bootout gui/$(id -u)/com.ai-tv-pet.certbot-renew`。
 - **路由器与浏览器实测（2026-10-25 13:20）**：路由器「路由设置 → DHCP服务器」里首选 DNS 填 `192.168.1.123`、备用 `192.168.1.1`（「上网设置 → 高级设置」里的 WAN 口 DNS 不能填局域网地址，固件会拒绝，不要用那一页）。局域网内的 Mac 重新拿到的 DHCP 信息里 DNS 已是这两个地址，`car.aimaker.vip` 解析到 `192.168.1.123`，tvpet / 百度 / GitHub 等其他域名解析不变。不带 `--resolve` 的 `curl https://car.aimaker.vip/health`：5 次全部 200、`remote_ip=192.168.1.123`、系统 CA 校验通过、16～33 ms（改前经 Cloudflare 150～165 ms）。桌面应用内置浏览器打开 `https://car.aimaker.vip/` 无证书拦截页，按 SSO 流程跳到 `home.aimaker.vip` 登录页（登录页仍经 Cloudflare，只在登录那一下）；打开 `/health` 显示 `agent_online: true, mode: control`。未登录的 `/ws/video`、`/ws/control` 经局域网返回 403。登录后的视频与控制延迟、手机 4G 下的公网访问由用户实看。
+
+## 2026-10-25 自动探索参照 FUEL / TARE（ugv-nav 0.8.0）；补记 Pi 代理 0.13.0
+
+用户要求：「把 TARE/FUEL 的三个关键做法加进现在的边界法」，确认「可以上」。设计见地图页设计 §6.1a。
+
+- **做法**（只改 ugv-nav 的 `frontiers.py`、`ros_ops.py`、`navctl.py`、`navd.py`）：
+  - **按信息量挑观察点**：只数穿过这段边界新看到的面积；不到 0.25 m² 的边界不去。
+  - **全局排序**：用 Held-Karp 求总路程最短的访问顺序，先去顺序里的第一个。
+  - **边走边判断**：`navigate --watch-frontier` 发现目标那段边界已扫到，就提前收工、重新规划。
+  - 没有改任何安全参数。
+- **门禁**：
+  - ruff、格式检查、mypy 全过；pytest 477 项通过，覆盖率 83.27%。
+  - CI 只有 `test_sso` 两项偶发失败。
+  - 变基到 0.7.1 时 `uv.lock` 带进了冲突标记，推送前已从主干重新生成，并修正了提交。
+- **预检**（没有让车动）：在车上运行中的 0.7.1 容器里，用当前 SLAM 地图跑新代码：144×159 格、已探索 16.4 m²，得到 6 个观察点的访问顺序，用时 0.42 s；边界判断 3 ms。
+- **部署（14:34，main `d0803d4`，PR #64 合并后从主干顶端构建，校验输出 ok）**：
+  - **部署前核对**：Pi 主机 `.venv` 与镜像都是 0.7.1（在主干上）；车静止，`nav_owned: false`，没有任务在跑。
+  - **先保存地图**：当前建图（16.4 m²）没保存过，部署前经 navd 自动存为 `maps/autosave-20261025-1434`，用户不要的话可以在地图页删除。
+  - **备份**：`backups/20261025-pre-0.8.0/`（`src.tgz` 和 `venv-ugv_nav_tools/`）。
+  - **安装**：删掉 `src/dist/` 里的旧 wheel 后 rsync（保留 `.env`），wheel SHA-256 前缀为 `dd4af05a`；`build-0.8.0.log` 构建成功，生成镜像 `ai-ugv-car/ugv-nav:0.8.0`；主机 `.venv` 装 0.8.0 后重启 `ugv-navd`。
+  - **切到新镜像**：本次开机的 `run/boot.id` 已有记录，所以 navd 重启时没有自动拉起容器；随后经 navd 的 `mapping` 任务用新镜像重建了容器。
+- **验证**：
+  - 容器镜像为 0.8.0，「已进入建图模式」。
+  - `ugv-ros-op frontier` 返回带 `gain_m2`、`fx`、`fy` 的访问顺序；`navigate --help` 里有 `--watch-frontier`。
+  - 容器日志 215 行里 KeepoutFilter 警告为 0（0.7.0 起）。
+  - `/depth_scan` 约 4.3 Hz；局部代价地图的插件为 `obstacle_layer, depth_layer, inflation_layer`，全局为 `static_layer, obstacle_layer, depth_layer, inflation_layer`；桥接 `board/status` 的 `depth_age` 0.05 s，没有 `depth_note`。
+  - 实车探索对比（新旧两种方法的总路程、用时）需要用户在场，见 TODO。
+- **回滚**：`UGV_NAV_VERSION=0.7.1` 重建容器（镜像仍在）；主机 `.venv` 装回 0.7.1（`backups/20261025-pre-0.8.0/src.tgz` 里的 `src/dist/`），然后重启 `ugv-navd`。
+- **补记 Pi 代理 0.13.0（2026-10-25 09:49，main `31c7989`，PR #56）**：
+  - 内容：深度扫描给 Nav2、board.sock 的 `status` 增加 `depth` 参数、关闭 OpenNI 镜像、`unsaved_map`。
+  - 安装：wheel 在 `releases/0.13.0/`（SHA-256 前缀为 `a4f81890`），两个环境都装了；`agent.json` 没改，备份在 `backups/20261025-pre-0.13.0/`。
+  - 验证：服务 active，对外 6 条连接。
+  - 地面标定：同时写入 `~/workspace-agent/agent-data/ai-ugv-car/pi-agent/depth-floor.json`（0600；镜头离地 0.147 m，俯 10.5°，横滚 -0.5°）。
+  - 回滚：两个环境装回 `releases/0.12.1/`。
