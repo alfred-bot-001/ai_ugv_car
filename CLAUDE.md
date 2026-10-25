@@ -15,7 +15,7 @@
 | 目录 | 包 / 版本 | 运行在 |
 | --- | --- | --- |
 | `robot-console/` | `tvpet_console`（ai-tv-pet-console 0.14.0），FastAPI 主控台，网页在 `src/tvpet_console/web/` | Mini（ssh `agent001`） |
-| `pi-agent/` | `tvpet_pi`（ai-tv-pet-pi-agent 0.13.0），设备代理，唯一的底盘 UART 所有者，含导航桥 `nav.py` 和 ToF 读取 `tof.py` | 车上 Pi 5（ssh `agent003`，用户 ws，免密 sudo） |
+| `pi-agent/` | `tvpet_pi`（ai-tv-pet-pi-agent 0.13.1），设备代理，唯一的底盘 UART 所有者，含导航桥 `nav.py` 和 ToF 读取 `tof.py` | 车上 Pi 5（ssh `agent003`，用户 ws，免密 sudo） |
 | `firmware/tof-bridge/` | Arduino sketch（arduino-cli，`esp32:esp32:XIAO_ESP32C5`） | 车头 XIAO ESP32-C5，USB 接 Pi |
 | `ugv-nav/` | `ugv_nav_tools`（ai-ugv-car-nav-tools 0.8.1）+ ROS2 Humble 容器（SLAM Toolbox、Nav2、RF2O、EKF）+ 主机服务 `ugv-navd` | Pi 的 docker 容器 `ugv-nav` |
 

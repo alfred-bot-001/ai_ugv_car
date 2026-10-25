@@ -173,6 +173,7 @@ def main() -> None:
             openni2.unload()
         return
     period = 1.0 / max(0.5, min(args.fps, 10.0))
+    cv2.setNumThreads(1)  # 5 frames a second need no thread pool (see depth.WORKER_ENV)
     floor = load_floor(args.floor)
     out = frame_output()
     threading.Thread(target=exit_when_stdin_closes, daemon=True).start()
