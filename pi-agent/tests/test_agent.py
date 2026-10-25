@@ -256,6 +256,20 @@ def test_a_quiet_half_hour_cuts_lidar_power_and_the_lights() -> None:
     asyncio.run(scenario())
 
 
+def test_mapping_started_at_boot_with_still_wheels_may_sleep() -> None:
+    async def scenario():
+        runtime, idle = sleepy_runtime(container="running healthy", mode="mapping")
+        runtime.navd_status["unsaved_map"] = True  # ugv-navd 0.7.0 says so explicitly
+        await runtime.sleep_tick(0.0)
+        assert await runtime.sleep_tick(idle) is None
+        runtime.navd_status["unsaved_map"] = False  # its own boot mapping, nothing driven
+        assert await runtime.sleep_tick(2 * idle - 1) is None  # quiet since the busy tick
+        assert await runtime.sleep_tick(2 * idle) == "sleep"
+        assert runtime.navd.request.call_args.args[0] == {"op": "standby"}
+
+    asyncio.run(scenario())
+
+
 def test_navigation_work_keeps_the_car_awake() -> None:
     async def scenario():
         runtime, idle = sleepy_runtime(container="running healthy", mode="mapping")

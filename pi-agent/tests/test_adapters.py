@@ -5,6 +5,7 @@ import mmap
 import os
 import struct
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -66,13 +67,19 @@ def test_capture_requires_explicit_start_and_expires(monkeypatch) -> None:
     worker = CaptureWorker(microphone)
     assert not opened and not worker.active
     worker.start()
-    time.sleep(0.015)
+    until(lambda: worker.latest()[1] is not None)  # sleeps overshoot: wait, do not guess
     worker.renew()
     assert worker.latest()[1] == bytes(640)
     worker.deadline = time.monotonic() - 1
-    time.sleep(0.02)
+    until(lambda: not worker.active)
     assert not worker.active and worker.latest()[1] is None and closed
     worker.stop()
+
+
+def until(condition: Callable[[], bool], limit: float = 2.0) -> None:
+    end = time.monotonic() + limit
+    while not condition() and time.monotonic() < end:
+        time.sleep(0.005)
 
 
 def test_alsa_exact_format_and_cleanup(monkeypatch) -> None:
@@ -93,6 +100,23 @@ def test_alsa_exact_format_and_cleanup(monkeypatch) -> None:
     microphone.close()
     process.terminate.assert_called_once()
     assert microphone.process is None
+
+
+def wait(seconds: float, guard: Guard, until: Callable[[], bool] | None = None) -> None:
+    """At least `seconds` (or, given `until`, until it holds; at most 2 s), heartbeating.
+
+    The Mini heartbeats every 0.2 s. Sleeps can overshoot a lot (macOS coalesces timers:
+    sleep(0.025) took 0.16 s, so the watchdog ticks that slowly too); one heartbeat
+    before a fixed sleep then ages past HEARTBEAT_MAX_AGE and the lease ends on its own,
+    which is not what these waits are about.
+    """
+    start = time.monotonic()
+    while time.monotonic() - start < seconds or (until and not until()):
+        if time.monotonic() - start > 2.0:
+            break
+        guard.heartbeat()
+        time.sleep(0.02)
+    guard.heartbeat()
 
 
 def test_uart_watchdog_and_evidence(tmp_path: Path, monkeypatch) -> None:
@@ -132,10 +156,9 @@ def test_uart_watchdog_and_evidence(tmp_path: Path, monkeypatch) -> None:
     guard = Guard()
     board = Board("test-uart", guard, evidence)
     board.open()
-    time.sleep(0.04)
     try:
+        wait(0.04, guard, lambda: board.status()["wheels_ready"])  # first telemetry read
         assert board.status()["wheels_ready"]
-        guard.heartbeat()
         board.received_at = time.monotonic() - 0.8
         lease = board.acquire()
         assert time.monotonic() - board.received_at < 0.1
@@ -145,19 +168,21 @@ def test_uart_watchdog_and_evidence(tmp_path: Path, monkeypatch) -> None:
             return [json.loads(call.args[0]) for call in uart.write.call_args_list]
 
         assert any(c.get("T") == 1 and c.get("L") == 0.05 for c in writes())
-        guard.heartbeat()
-        time.sleep(0.25)  # the watchdog re-drives the held state under the 300 ms timeout
+        # The watchdog re-drives the held state under the 300 ms timeout.
+        wait(
+            0.25, guard, lambda: sum(c.get("T") == 1 and c.get("L") == 0.05 for c in writes()) >= 2
+        )
         assert sum(1 for c in writes() if c.get("T") == 1 and c.get("L") == 0.05) >= 2
-        guard.heartbeat()
         written = len(writes())
-        time.sleep(0.5)  # no new state: motion stops, the lease stays for the next state
+        # No new state: motion stops, the lease stays for the next state.
+        wait(0.55, guard, lambda: [c for c in writes() if c.get("T") == 1][-1]["L"] == 0.0)
         assert guard.lease == lease
         wheel = [c for c in writes() if c.get("T") == 1]
         assert wheel[-1] == {"T": 1, "L": 0.0, "R": 0.0}
         assert not any(c.get("T") == 135 for c in writes()[written:])  # no sagging stop
-        guard.heartbeat()
         board.move(Stick(target="gimbal", x=1, y=0, lease=lease, sequence=2))
-        time.sleep(0.15)  # integrated at 20 Hz: pan grows, tilt stays, limits hold
+        # Integrated at 20 Hz: pan grows, tilt stays, limits hold.
+        wait(0.15, guard, lambda: len([c for c in writes() if c.get("T") == 133]) >= 2)
         gimbal = [c for c in writes() if c.get("T") == 133]
         assert gimbal and gimbal[-1]["X"] > gimbal[0]["X"] >= 0 and gimbal[-1]["Y"] == 0
         assert gimbal[-1]["SPD"] == 0 and all(c["X"] <= 170 for c in gimbal)

@@ -211,7 +211,31 @@ local_costmap:
       resolution: 0.05
       plugins:
       - obstacle_layer
+      - depth_layer
       - inflation_layer
+      # Front depth camera (2026-10-25, user request): /depth_scan from the board bridge,
+      # in base_link, holds what lies 5-35 cm above the floor within 1.5 m (tvpet_pi.
+      # depth_scan), which the LiDAR's single plane misses. Its own layer, so its
+      # clearing never erases what the LiDAR marked; inf is clear out to 2 m, NaN unseen.
+      # No depth (camera off, not calibrated) leaves the layer empty; Nav2 runs on.
+      depth_layer:
+        plugin: nav2_costmap_2d::ObstacleLayer
+        enabled: true
+        observation_sources: depth
+        footprint_clearing_enabled: true
+        depth:
+          topic: /depth_scan
+          data_type: LaserScan
+          marking: true
+          clearing: true
+          inf_is_valid: true
+          min_obstacle_height: 0.0
+          max_obstacle_height: 1.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 1.6
+          raytrace_min_range: 0.0
+          raytrace_max_range: 2.0
+          expected_update_rate: 0.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 5.0
@@ -235,8 +259,9 @@ local_costmap:
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
         map_subscribe_transient_local: true
-      # S0 keepout zones (e.g. the balcony). Inert until ugv-navctl localize finds a
-      # <map>.keepout.yaml and launches the mask server (keepout:= launch argument).
+      # S0 keepout zones (e.g. the balcony), for maps with <map>.keepout.yaml (ugv-navctl
+      # localize passes keepout:= and starts the mask server). Without a mask the launch
+      # drops this filter (ugv_nav_tools.nav_params, 2026-10-25: it warned every update).
       filters:
       - keepout_filter
       keepout_filter:
@@ -260,7 +285,31 @@ global_costmap:
       plugins:
       - static_layer
       - obstacle_layer
+      - depth_layer
       - inflation_layer
+      # Front depth camera (2026-10-25, user request): /depth_scan from the board bridge,
+      # in base_link, holds what lies 5-35 cm above the floor within 1.5 m (tvpet_pi.
+      # depth_scan), which the LiDAR's single plane misses. Its own layer, so its
+      # clearing never erases what the LiDAR marked; inf is clear out to 2 m, NaN unseen.
+      # No depth (camera off, not calibrated) leaves the layer empty; Nav2 runs on.
+      depth_layer:
+        plugin: nav2_costmap_2d::ObstacleLayer
+        enabled: true
+        observation_sources: depth
+        footprint_clearing_enabled: true
+        depth:
+          topic: /depth_scan
+          data_type: LaserScan
+          marking: true
+          clearing: true
+          inf_is_valid: true
+          min_obstacle_height: 0.0
+          max_obstacle_height: 1.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 1.6
+          raytrace_min_range: 0.0
+          raytrace_max_range: 2.0
+          expected_update_rate: 0.0
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
@@ -284,8 +333,9 @@ global_costmap:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 5.0
         inflation_radius: 0.30
-      # S0 keepout zones (e.g. the balcony). Inert until ugv-navctl localize finds a
-      # <map>.keepout.yaml and launches the mask server (keepout:= launch argument).
+      # S0 keepout zones (e.g. the balcony), for maps with <map>.keepout.yaml (ugv-navctl
+      # localize passes keepout:= and starts the mask server). Without a mask the launch
+      # drops this filter (ugv_nav_tools.nav_params, 2026-10-25: it warned every update).
       filters:
       - keepout_filter
       keepout_filter:

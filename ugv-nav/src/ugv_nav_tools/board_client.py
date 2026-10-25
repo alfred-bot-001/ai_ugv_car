@@ -44,8 +44,12 @@ class BoardClient:
             raise BoardError(str(error_text or "board refused request"))
         return reply
 
-    def status(self) -> dict[str, Any]:
-        return self.request({"op": "status"})
+    def status(self, depth: bool = False) -> dict[str, Any]:
+        """Board status; with depth, also pi-agent's newest front depth scan (or None).
+
+        Asking for depth keeps pi-agent's depth camera on (pi-agent 0.13.0 and later).
+        """
+        return self.request({"op": "status", "depth": True} if depth else {"op": "status"})
 
     def stop(self, reason: str | None = None) -> None:
         """A reason (stall_body, localization_lost) also ends pi-agent's arm session."""

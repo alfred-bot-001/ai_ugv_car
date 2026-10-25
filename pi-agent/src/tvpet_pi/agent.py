@@ -22,7 +22,7 @@ from websockets.exceptions import WebSocketException
 from websockets.typing import Subprotocol
 
 from .capture import Camera, CaptureWorker, Frame, Microphone
-from .depth import DepthCamera, DepthFrame
+from .depth import DEFAULT_FLOOR, DepthCamera, DepthFrame
 from .hardware import Board, system_status
 from .m2 import M2Link
 from .nav import NavBridge
@@ -43,6 +43,13 @@ FRAME_SEND_TIMEOUT = 1.0
 AUDIO_SEND_TIMEOUT = 0.5
 # Sleep mode (tvpet_pi.sleep) is checked this often, Mini connected or not.
 SLEEP_TICK_S = 5.0
+# Depth for Nav2: the ugv-nav bridge asks with every board status poll (20 Hz); depth
+# stays on this long after the last ask. A scan older than DEPTH_SCAN_MAX_AGE_S is not
+# handed out, and a worker that failed is not restarted for DEPTH_RETRY_S.
+DEPTH_NAV_HOLD_S = 3.0
+DEPTH_SCAN_MAX_AGE_S = 0.6
+DEPTH_TICK_S = 0.5
+DEPTH_RETRY_S = 10.0
 # Safety stops as the map page log shows them (tvpet_pi.nav reasons).
 NAV_STOP_TEXT = {
     "stall_body": "车轮在转但车没动",
@@ -110,14 +117,20 @@ class AgentRuntime:
         self.front_camera = CaptureWorker(Camera(self.front_path)) if self.front_path else None
         self.front_enabled = False
         # Front Orbbec depth through OpenNI2 in pose-venv; needs depth_openni and pose_python.
+        # It runs for the depth view (depth_enabled) and while the ugv-nav bridge asks for
+        # the Nav2 scan (depth_nav_until, renewed by every such board status request).
         self.depth_openni = str(config.get("depth_openni", ""))
         pose_python = str(config.get("pose_python", ""))
+        self.depth_floor = str(Path(str(config.get("depth_floor") or DEFAULT_FLOOR)).expanduser())
         self.depth_camera = (
-            CaptureWorker(DepthCamera(pose_python, self.depth_openni))
+            CaptureWorker(DepthCamera(pose_python, self.depth_openni, self.depth_floor))
             if self.depth_openni and pose_python
             else None
         )
         self.depth_enabled = False
+        self.depth_nav_until = 0.0
+        if self.nav and self.depth_camera:
+            self.nav.depth = self.nav_depth_scan
         self.microphone_device = str(config.get("microphone", M2_MICROPHONE))
         self.microphone = CaptureWorker(Microphone(self.microphone_device))
         self.speaker_device = str(config.get("speaker", "plughw:CARD=Device,DEV=0"))
@@ -184,6 +197,8 @@ class AgentRuntime:
                 else "unknown",
                 "error": self.depth_camera.error if self.depth_camera else "",
                 "format": "Orbbec 深度 · 640×400 / 5fps",
+                "navigation": self.depth_for_nav(time.monotonic()),
+                "floor_calibrated": Path(self.depth_floor).exists(),
             },
             "microphone": {
                 "state": "fault"
@@ -313,6 +328,8 @@ class AgentRuntime:
             or (
                 str(status.get("container", "")).startswith("running")
                 and status.get("mode") == "mapping"
+                # ugv-navd 0.7.0: false for mapping it started at boot, wheels unmoved.
+                and status.get("unsaved_map") is not False
             )
         )
 
@@ -345,6 +362,47 @@ class AgentRuntime:
             except Exception:  # noqa: BLE001 - the sleep keeper must outlive any one failure
                 LOGGER.exception("sleep check failed")
             await asyncio.sleep(SLEEP_TICK_S)
+
+    def depth_for_nav(self, now: float) -> bool:
+        return now < self.depth_nav_until
+
+    def nav_depth_scan(self) -> dict[str, Any] | None:
+        """For the ugv-nav bridge (its thread): keep depth on for Nav2; the newest scan.
+
+        None until a fresh frame carries a scan (that needs the floor calibration); the
+        bridge then publishes nothing and Nav2 runs on the LiDAR alone.
+        """
+        self.depth_nav_until = time.monotonic() + DEPTH_NAV_HOLD_S
+        if self.depth_camera is None:
+            return None
+        _, value = self.depth_camera.latest()
+        if not isinstance(value, DepthFrame) or not isinstance(value.meta.get("scan"), dict):
+            return None
+        age = (time.monotonic_ns() - value.timestamp_ns) / 1e9
+        if age > DEPTH_SCAN_MAX_AGE_S:
+            return None
+        return {"sequence": value.sequence, "age": round(age, 3), **value.meta["scan"]}
+
+    async def depth_tick(self, now: float) -> None:
+        """Start or renew depth while Nav2 asks for it; stop it once nobody uses it."""
+        worker = self.depth_camera
+        if worker is None:
+            return
+        if self.depth_for_nav(now):
+            if worker.active:
+                worker.renew()
+            elif not worker.error or now - worker.started_at >= DEPTH_RETRY_S:
+                await asyncio.to_thread(worker.start)
+        elif worker.active and not self.depth_enabled:
+            await asyncio.to_thread(worker.stop)
+
+    async def _depth_loop(self) -> None:
+        while True:
+            try:
+                await self.depth_tick(time.monotonic())
+            except Exception:  # noqa: BLE001 - the keeper must outlive any one failure
+                LOGGER.exception("depth keeper failed")
+            await asyncio.sleep(DEPTH_TICK_S)
 
     async def command(self, message: dict[str, Any]) -> None:
         action, args = message.get("action"), message.get("args", {})
@@ -384,7 +442,9 @@ class AgentRuntime:
                     if channel == "audio" and self.m2:
                         self.m2.wake()
                     await asyncio.to_thread(worker.start)
-                elif not enabled:
+                elif not enabled and not (
+                    channel == "depth" and self.depth_for_nav(time.monotonic())
+                ):
                     await asyncio.to_thread(worker.stop)
             elif action == "nav":
                 result["nav"] = await self.nav_command(NavCommand.model_validate(args))
@@ -587,7 +647,8 @@ class AgentRuntime:
             if channel == "front" and not self.front_enabled and worker.active:
                 await asyncio.to_thread(worker.stop)
             if channel == "depth" and not self.depth_enabled and worker.active:
-                await asyncio.to_thread(worker.stop)
+                if not self.depth_for_nav(time.monotonic()):
+                    await asyncio.to_thread(worker.stop)
             await asyncio.sleep(0.005)
 
     def nav_agent_packet(self) -> bytes:
@@ -686,6 +747,7 @@ class AgentRuntime:
         if self.tof:
             self.tof.open()
         keeper = asyncio.create_task(self._sleep_loop())
+        depth_keeper = asyncio.create_task(self._depth_loop())
         try:
             while True:
                 tasks: list[asyncio.Task[None]] = []
@@ -737,7 +799,7 @@ class AgentRuntime:
                     await asyncio.to_thread(self.microphone.stop)
                     if self.front_camera:
                         await asyncio.to_thread(self.front_camera.stop)
-                    if self.depth_camera:
+                    if self.depth_camera and not self.depth_for_nav(time.monotonic()):
                         await asyncio.to_thread(self.depth_camera.stop)
                     self.video_enabled = self.audio_enabled = self.front_enabled = False
                     self.depth_enabled = False
@@ -745,7 +807,8 @@ class AgentRuntime:
                 await asyncio.sleep(2)
         finally:
             keeper.cancel()
-            await asyncio.gather(keeper, return_exceptions=True)
+            depth_keeper.cancel()
+            await asyncio.gather(keeper, depth_keeper, return_exceptions=True)
             self.board.close()
             self.stop_playback()
             if self.m2:

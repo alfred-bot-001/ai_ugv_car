@@ -2,26 +2,36 @@
 
 Reads the OpenNI2 depth stream (640x400, 1 mm units), and DEPTH_FPS times a second
 writes a colorized JPEG with a few distances to stdout (tvpet_pi.depth_wire framing).
-Exits when stdin closes, so it never outlives tvpet_pi.agent. Started only while someone
-watches the depth view; the sensor's laser is on only then. pose-venv has none of the
-agent's dependencies, so from this package it imports only depth_wire (stdlib only).
+Exits when stdin closes, so it never outlives tvpet_pi.agent. Runs while someone watches
+the depth view or Nav2 wants the scan (the sensor's laser is on only then). With a floor
+calibration (--floor) each frame also carries the virtual scan (tvpet_pi.depth_scan).
+pose-venv has none of the agent's dependencies, so from this package it imports only
+depth_wire and depth_scan (standard library and numpy).
+
+Floor calibration, with clear floor ahead and no depth view or navigation running:
+    pose-venv/bin/python -m tvpet_pi.depth_worker --openni DIR --calibrate FILE
 """
 
 import argparse
+import json
 import os
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import IO, Any
 
 import cv2
-import numpy as np  # type: ignore[import-not-found]
+import numpy as np
 from openni import _openni2 as c_api
 from openni import openni2
 
+from .depth_scan import CAMERA_X_M, Floor, combine_floors, fit_floor, virtual_scan
 from .depth_wire import FAR_MM, NEAR_MM, encode_frame
 
 CENTRE_HALF = 6  # px: the centre reading is the median of a 13 x 13 patch
+CALIBRATION_SKIP = 15
+CALIBRATION_FRAMES = 5
 
 
 def depth_stats(depth: Any) -> dict[str, Any]:
@@ -54,13 +64,54 @@ def colorize(depth: Any) -> Any:
     return image
 
 
-def encode(frame: Any) -> tuple[bytes, dict[str, Any]] | None:
-    """An OpenNI depth frame as a colorized JPEG and its distances."""
-
+def as_array(frame: Any) -> Any:
     depth = np.frombuffer(frame.get_buffer_as_uint16(), dtype=np.uint16)
-    depth = depth.reshape(frame.height, frame.width)
+    return depth.reshape(frame.height, frame.width)
+
+
+def encode(depth: Any, floor: Floor | None) -> tuple[bytes, dict[str, Any]] | None:
+    """A depth image as a colorized JPEG, its distances and (calibrated) the scan."""
+
     ok, jpeg = cv2.imencode(".jpg", colorize(depth), [cv2.IMWRITE_JPEG_QUALITY, 75])
-    return (jpeg.tobytes(), depth_stats(depth)) if ok else None
+    if not ok:
+        return None
+    meta = depth_stats(depth)
+    if floor is not None:
+        meta["scan"] = virtual_scan(depth, floor)
+    return jpeg.tobytes(), meta
+
+
+def load_floor(path: str) -> Floor | None:
+    """The floor calibration, or None (none yet, or unusable: then said on stderr)."""
+    if not path:
+        return None
+    try:
+        return Floor.from_json(json.loads(Path(path).expanduser().read_text()))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        print(f"depth floor calibration {path} ignored: {error}", file=sys.stderr)
+        return None
+
+
+def calibrate(stream: Any, path: Path, camera_x: float) -> dict[str, Any]:
+    """Fit the floor on several frames; they must agree. Writes `path` (0600)."""
+    for _ in range(CALIBRATION_SKIP):  # the first frames after start can be patchy
+        stream.read_frame()
+    floors = []
+    for _ in range(CALIBRATION_FRAMES):
+        for _ in range(5):  # about 6 Hz apart
+            frame = stream.read_frame()
+        floors.append(fit_floor(as_array(frame), camera_x=camera_x))
+    data = combine_floors(floors).to_json()
+    data |= {"frames": len(floors), "calibrated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as file:
+        json.dump(data, file, indent=1)
+    os.replace(temporary, path)
+    return data
 
 
 def frame_output() -> IO[bytes]:
@@ -80,16 +131,8 @@ def exit_when_stdin_closes() -> None:
     os._exit(0)
 
 
-def main() -> None:
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--openni", required=True, help="folder with libOpenNI2.so")
-    parser.add_argument("--fps", type=float, default=5.0)
-    args = parser.parse_args()
-    period = 1.0 / max(0.5, min(args.fps, 10.0))
-    out = frame_output()
-    threading.Thread(target=exit_when_stdin_closes, daemon=True).start()
-    openni2.initialize(args.openni)
+def open_stream(openni: str) -> Any:
+    openni2.initialize(openni)
     device = openni2.Device.open_any()
     stream = device.create_depth_stream()
     stream.set_video_mode(
@@ -100,7 +143,40 @@ def main() -> None:
             fps=30,
         )
     )
+    # OpenNI mirrors depth left-right by default (seen on the car 2026-10-25: the closet on
+    # the colour camera's right showed on the depth view's left). The scan's bearings and
+    # the depth view need the true side.
+    stream.set_mirroring_enabled(False)
     stream.start()
+    return stream
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--openni", required=True, help="folder with libOpenNI2.so")
+    parser.add_argument("--fps", type=float, default=5.0)
+    parser.add_argument("--floor", default="", help="floor calibration; frames then carry a scan")
+    parser.add_argument(
+        "--calibrate", metavar="FILE", help="fit the floor ahead into FILE and exit"
+    )
+    parser.add_argument(
+        "--camera-x", type=float, default=CAMERA_X_M, help="lens ahead of base_link (m)"
+    )
+    args = parser.parse_args()
+    if args.calibrate:
+        stream = open_stream(args.openni)
+        try:
+            data = calibrate(stream, Path(args.calibrate).expanduser(), args.camera_x)
+            print(json.dumps(data, ensure_ascii=False))
+        finally:
+            stream.stop()
+            openni2.unload()
+        return
+    period = 1.0 / max(0.5, min(args.fps, 10.0))
+    floor = load_floor(args.floor)
+    out = frame_output()
+    threading.Thread(target=exit_when_stdin_closes, daemon=True).start()
+    stream = open_stream(args.openni)
     sequence, last = 0, 0.0
     try:
         while True:
@@ -109,12 +185,12 @@ def main() -> None:
             if now - last < period:
                 continue
             last = now
-            encoded = encode(frame)
+            encoded = encode(as_array(frame), floor)
             if encoded is None:
                 continue
-            jpeg, stats = encoded
+            jpeg, meta = encoded
             sequence += 1
-            out.write(encode_frame({"sequence": sequence, **stats}, jpeg))
+            out.write(encode_frame({"sequence": sequence, **meta}, jpeg))
             out.flush()
     except BrokenPipeError:
         pass
