@@ -648,3 +648,44 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **做法**：只改 Mini。总览页实时视频下方加一条 `.tof-strip`：8×8 热力图（`tofColor`：100 mm 红 → 1500 mm 蓝，4000 / 无效灰；判定命中的格子红框「障碍」、黄框「失地」；悬停或点一格读 mm 值）和一行小字（`tofText`：状态 未启用 / 启动中 / 正常 / 故障+原因 / 设备离线，帧率，最近距离与所在格，判定 正常 / 低矮障碍 / 悬崖 / 无基准，命中格数，`board.safety_stop` 的上次传感器停车原因与时间）。数据就是现有 1 Hz `/api/v1/status` 轮询里的 `status.tof`（Pi 0.10.0 起）与 `board.safety_stop`，不新开通道、不改 Pi；Pi 代理一秒上报一次状态，所以页面矩阵是 1 Hz，重绘上限 5 次/秒（`TOF_RENDER_MS`）。64 个值长度不对、非整数时按「无数据」处理，故障时不画旧帧。`protocol.py` 未变，Mini 上的协议包已是 0.11.0（随 0.13.10 一起升过），本次只需装主控台 wheel。
 - **验证**：ruff / 格式 / mypy 全过；pytest 429 项（负载 165 的机器上跑了 11.5 分钟）中 423 通过，5 项主控台超时类用例（`test_front_camera` 2 项、`test_gateway` 2 项、`test_online` 1 项）单独重跑全部通过，`test_nav_stream.py::test_forwarding_only_while_the_page_is_open` 是主干既有失败；覆盖率 84.30%；8 个 `.mjs` 全过（新增 `test_tof_frontend.mjs`：着色、解析、文案、各状态与上次停车）。本机模拟状态源预览：桌面与 375 px 手机宽度下热力图在视频下方、无横向溢出；正常 / 低矮障碍（12 格红框、上次停车时间）/ 故障（灰格 + 原因）三种状态正确；点格读数可用。实车遥测核验待部署后在页面上看（本会话无法登录正式入口）。
 - **部署**：待用户「可以上」。Mini 从主干顶端构建 `releases/0.13.11-ai_ugv_car-<sha>/`，停服务装主控台 wheel 后 `launchctl bootout/bootstrap`；回滚装回 `releases/0.13.10-ai_ugv_car-a3dd86d/`。
+
+## 2026-10-25 前置 Orbbec 深度图（Pi 0.12.0 → 0.12.1 / Mini 0.14.0）
+
+用户需求：在主控台看前置相机的深度图，要装 OpenNI2 驱动。
+
+- **做法**：
+  - **运行库**：OpenNI2 运行库放在 Pi 的 `deploy/ai-tv-pet-agent/vendor/openni2-arm64/`，来源和许可见其中的 `SOURCE.txt`（orbbec/ros2_astra_camera `f7e71d9`，`openni2_redist/arm64`；2025 版的 ros_astra_camera 能打开设备，但给的深度全是空的，换模式时还会崩溃）。pose-venv 装了 `openni 2.3.0`；`private/agent.json` 加了 `depth_openni`。
+  - **工作进程**：深度工作进程 `tvpet_pi.depth_worker` 用 pose-venv 的 Python 运行，有人看「深度」时才启动（激光也只在那时打开），以 5 fps 输出着色 JPEG 和中心/最近距离；没人看时关掉。
+  - **主控台**：Mini 0.14.0 把它作为第六条设备连接 `depth` 转发，总览页和地图页的画面源都加了「深度」。
+- **USB 供电**：相机必须接车上独立供电的 VL817 集线器（现在接在 4 号口，经相机自带的子集线器分成 `1-1.4.1` 彩色和 `1-1.4.2` 深度）。接在 Pi 自身的 USB 口时，Pi 的总限流只有 600 mA（`usb_max_current_enable=0`），激光投射器起不来，深度全是 0，还会触发限流，让雷达等其他 USB 设备掉线。休眠功能（Pi 0.11.0 / ugv-nav 0.6.0）只用 `uhubctl -l 1-1 -p 1` 断开 1 号口（雷达的 CP2102），不影响 4 号口的相机，已用 `uhubctl -l 1-1` 核对。
+- **0.12.0 的问题**：
+  - 现象：部署后深度一帧都出不来。
+  - 原因一：工作进程从 `tvpet_pi.depth` 导入帧格式，这条导入链经 `capture` → `protocol` 拉进了 pydantic，而 pose-venv 里没有代理的依赖，进程一导入就退出。它的 stderr 又被丢到了 `/dev/null`，代理只看到管道关闭。
+  - 原因二：修好导入后又发现，Orbbec 驱动启动时会往 stdout 打 3 行日志，把第一帧的帧头弄坏了。
+  - 0.12.1 的修法：帧格式移到纯标准库的 `depth_wire.py`；工作进程先把 stdout 复制一份专门传帧，再把文件描述符 1 指到 stderr；工作进程的 stderr 改为进入代理的 journal。新测试在屏蔽 pydantic、伪造 cv2/numpy/openni 的条件下导入工作进程，并检查驱动的输出不会混进帧流。
+- **门禁**：
+  - ruff、格式检查、mypy 全过；pytest 433 项通过，覆盖率 84%。
+  - 本机失败 2 项，均是主干已有的失败，与本次无关：`test_uart_watchdog_and_evidence`、`test_navigation_keeps_the_tight_runaway_bound_and_the_joystick_restores_it`。
+  - CI 只有 `test_sso` 的 2 项偶发失败（CI 虚拟机时钟）。
+- **部署**：
+  - **Pi 0.12.0**（main `7163099`，PR #52）：
+    - wheel 在 `releases/0.12.0/`，装进 `.venv` 和 pose-venv；
+    - `agent.json` 备份在 `backups/20261025-pre-0.12.0/agent.json`。
+  - **Mini 0.14.0**（同一提交）：
+    - 装的是 `releases/0.14.0-ai_ugv_car-7163099/`（主控台 0.14.0、Pi 协议包 0.12.0、`uv.lock`；主控台 wheel 的 SHA-256 前缀为 `f7b1dddd`）；
+    - 线上原来是 0.13.10，ToF 矩阵 0.13.11（PR #51）合并后一直没有部署，这次一并上线；
+    - 部署前的状态在 `backups/pre-0.13.11-20261025-082947/`（核对过，是 0.13.10：没有 ToF 条，也没有深度）。
+  - **Pi 0.12.1**（main `ffbcafd`，PR #53，从主干顶端构建，校验输出 ok）：
+    - 部署前车静止，`nav_owned: false`；
+    - wheel 在 `releases/0.12.1/`（SHA-256 前缀为 `cd1fa748`），停服务后装进两个环境再启动；
+    - `agent.json` 未改，仍备份一份在 `backups/20261025-pre-0.12.1/`；
+    - Mini 不用跟着升级：0.12.1 只改了深度工作进程，协议包不变。
+- **验证**：
+  - 用已安装的 0.12.1 和真实 `agent.json`，在与 `ai-tv-pet-agent.service` 相同的沙箱里（ProtectHome=read-only 等，用 `systemd-run` 跑）测试：适配器在 `.venv`、工作进程在 pose-venv，6 帧用了 3.4 s（启动约 2.4 s，之后 5 fps），有效像素约 65%；关闭后工作进程立即退出，没有遗留进程。
+  - 服务状态为 active，对外 6 条连接；公网 `/health` 为 `agent_online: true`。
+  - 看过一帧着色图：墙在 1.5～2 m，地面在近处，没有读数的地方是黑色。当时画面中心正好落在没有读数的那条带上，所以页面上「中心」会显示「—」。
+  - 主控台已改用 SSO，自己签的本地会话会被拒绝（签过的 2 个临时会话已被注销，管理员凭据没动），所以本会话没能经公网页面实看。页面上的「深度」按钮需要用户刷新后实际点一次确认。
+- **回滚**：
+  - Pi：装回 `releases/0.12.0/`，或者回到不带深度的 `releases/0.11.0/`，两个环境都要装；回到 0.11.0 时再用 `backups/20261025-pre-0.12.0/agent.json` 恢复配置，然后重启 `ai-tv-pet-agent`。
+  - Mini：装回 `releases/0.13.10-ai_ugv_car-a3dd86d/`，然后 `launchctl bootout/bootstrap`。
+  - 运行库目录 `vendor/openni2-arm64/` 放着不影响任何东西；`agent.json` 里去掉 `depth_openni`，深度就关闭了。
