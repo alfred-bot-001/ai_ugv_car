@@ -772,3 +772,9 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
   - 后果：解析失败发生在导航之前，车没动。
   - 漏掉的原因：测试里的假 `ros-op` 不解析参数，预检只跑了 `frontier`。
   - 0.8.1 改为一个参数 `--watch-frontier=FX,FY`，并新增回归测试：用 argparse 解析 navctl 实际传出的参数（负坐标）。
+- **部署 0.8.1（2026-10-25，main `82efdaa`，PR #66，校验输出 ok）**：
+  - **部署前**：navd 空闲（停在那次失败的探索任务上）。
+  - **备份**：`backups/20261025-pre-0.8.1/`。
+  - **安装**：rsync 源码，wheel SHA-256 前缀为 `26fa767d`；`build-0.8.1.log` 生成镜像 `ai-ugv-car/ugv-nav:0.8.1`；主机 `.venv` 装 0.8.1（`navctl.py` 已是等号形式）后重启 `ugv-navd`，active。
+  - **没有重建容器**：改的只是主机侧的 navctl，容器里的 `ros_ops` 与 0.8.0 相同，用户当前的建图因此保留；容器仍是 0.8.0 镜像，下次切换模式时会换成 0.8.1。
+  - **回滚**：主机 `.venv` 装回 0.8.0（`backups/20261025-pre-0.8.1/src.tgz` 里的 `src/dist/`），然后重启 `ugv-navd`。
