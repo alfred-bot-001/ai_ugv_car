@@ -1,5 +1,6 @@
 """ugv-navd: strict requests, one job at a time, and a stop that always wins."""
 
+import argparse
 import json
 import math
 import os
@@ -29,6 +30,7 @@ from ugv_nav_tools.navd import (
     respond,
     serve,
 )
+from ugv_nav_tools.route import Pose
 
 
 class FakeRun:
@@ -399,9 +401,9 @@ def test_explore_drives_frontier_to_frontier_until_none_is_left(tmp_path: Path) 
     assert json.loads((navd.ctl.settings.board / "arm.json").read_text()) == {"enabled": False}
     navigate = [c for c in run.calls if "navigate" in c]
     # Exploration legs watch their frontier piece and may end early.
-    assert [c[-2:] for c in navigate] == [
-        ["--watch-frontier", "1.400,0.000"],
-        ["--watch-frontier", "2.400,1.000"],
+    assert [c[-1] for c in navigate] == [
+        "--watch-frontier=1.400,0.000",
+        "--watch-frontier=2.400,1.000",
     ]
 
 
@@ -420,6 +422,27 @@ def test_explore_counts_a_frontier_mapped_on_the_way_as_done(tmp_path: Path) -> 
     assert navd.job.result["seen_early"] == 2
     frontier_calls = [c for c in run.calls if "frontier" in c]
     assert not any("--avoid" in " ".join(c) for c in frontier_calls)  # not a failure
+
+
+def test_a_negative_frontier_point_reaches_argparse_as_one_token() -> None:
+    """0.8.0 sent "--watch-frontier -0.054,0.488"; argparse took the value for an option."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("x", type=float)
+    parser.add_argument("--watch-frontier")
+    ctl = make_navd(Path(tempfile.mkdtemp()), {"navigate": [{"ok": True}]})[0].ctl
+    calls: list[list[str]] = []
+    real_run = ctl.run
+
+    def record(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return real_run(command, **kwargs)
+
+    ctl.run = record
+    ctl.goal(Pose(-0.5, 0.2, 0.0), watch_frontier=(-0.054, 0.488))
+    navigate = next(c for c in calls if "navigate" in c)
+    args = navigate[navigate.index("navigate") + 1 :]
+    parsed = parser.parse_args([args[0], *[a for a in args if a.startswith("--watch")]])
+    assert parsed.watch_frontier == "-0.054,0.488" and parsed.x == -0.5
 
 
 def test_explore_avoids_failed_targets_and_stops_on_a_safety_stop(tmp_path: Path) -> None:
