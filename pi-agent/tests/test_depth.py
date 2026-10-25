@@ -113,6 +113,24 @@ def test_camera_reads_the_worker_and_stops_it() -> None:
     dying.close()
 
 
+ENV_WORKER = """
+import os, sys
+from tvpet_pi.depth_wire import encode_frame
+threads = int(os.environ["OPENBLAS_NUM_THREADS"]) + int(os.environ["OMP_NUM_THREADS"])
+sys.stdout.buffer.write(encode_frame({"sequence": threads}, b"\\xff\\xd8x"))
+sys.stdout.buffer.flush()
+sys.stdin.buffer.read()
+"""
+
+
+def test_the_worker_runs_single_threaded() -> None:
+    # Idle OpenBLAS threads spin; the worker took more than a whole core (2026-10-25).
+    camera = DepthCamera("python", "/openni", command=[sys.executable, "-c", ENV_WORKER])
+    camera.open()
+    assert camera.read().sequence == 2  # both pinned to 1
+    camera.close()
+
+
 class Worker:
     def __init__(self, value: object = None) -> None:
         self.active = False

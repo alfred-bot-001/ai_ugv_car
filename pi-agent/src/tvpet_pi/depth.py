@@ -7,6 +7,7 @@ them for CaptureWorker; the worker exits when its stdin closes, so it never outl
 agent. Its stderr goes to the agent's journal, so a worker that cannot start says why.
 """
 
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -16,6 +17,9 @@ from .capture import Frame
 from .depth_wire import read_frame
 
 DEPTH_FPS = 5
+# One thread for numpy's BLAS and OpenMP in the worker: their idle threads spin between
+# calls, which took the worker above a whole core of the Pi 5 (2026-10-25).
+WORKER_ENV = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"}
 # Floor calibration for the Nav2 scan (tvpet_pi.depth_worker --calibrate writes it).
 DEFAULT_FLOOR = "~/workspace-agent/agent-data/ai-ugv-car/pi-agent/depth-floor.json"
 
@@ -53,6 +57,7 @@ class DepthCamera:
             self.command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
+            env={**os.environ, **WORKER_ENV},
         )
 
     def read(self) -> DepthFrame:

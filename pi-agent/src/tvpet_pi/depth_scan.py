@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -178,16 +179,40 @@ def combine_floors(floors: list[Floor]) -> Floor:
     return Floor((float(normal[0]), float(normal[1]), float(normal[2])), height, floors[0].camera_x)
 
 
-def virtual_scan(depth: Any, floor: Floor) -> dict[str, Any]:
-    """One frame as a scan around base_link: ranges in mm, 0 clear, None unknown."""
-    points = camera_points(depth)
+@lru_cache(maxsize=4)
+def ray_factors(height: int, width: int, floor: Floor) -> tuple[Any, Any, Any]:
+    """Per sampled pixel, what one metre of depth adds to height, ahead and left.
+
+    A pixel's point is depth times its ray, so height above the floor, distance ahead
+    of the lens and distance to the left are each depth times a fixed factor (plus an
+    offset). Worked out once per image size and floor; each frame then only multiplies
+    (2026-10-25: rebuilding points and matrix products every frame cost 38 ms of CPU).
+    """
+    sx, sy = width / WIDTH, height / HEIGHT
+    v, u = np.mgrid[0:height:STEP, 0:width:STEP]
+    rays = np.stack(
+        [(u - CX * sx) / (FX * sx), (v - CY * sy) / (FY * sy), np.ones(u.shape)], axis=-1
+    ).reshape(-1, 3)
     up = np.array(floor.normal)
-    above = points @ up + floor.height
     ahead = np.array([0.0, 0.0, 1.0]) - up[2] * up  # the lens axis along the floor
     ahead /= np.linalg.norm(ahead)
     left = np.cross(up, ahead)
-    x = points @ ahead + floor.camera_x
-    y = points @ left
+    return (
+        (rays @ up).astype(np.float32),
+        (rays @ ahead).astype(np.float32),
+        (rays @ left).astype(np.float32),
+    )
+
+
+def virtual_scan(depth: Any, floor: Floor) -> dict[str, Any]:
+    """One frame as a scan around base_link: ranges in mm, 0 clear, None unknown."""
+    up_k, ahead_k, left_k = ray_factors(depth.shape[0], depth.shape[1], floor)
+    z = depth[::STEP, ::STEP].reshape(-1).astype(np.float32) / 1000.0
+    valid = z > 0
+    z = z[valid]
+    above = z * up_k[valid] + floor.height
+    x = z * ahead_k[valid] + floor.camera_x
+    y = z * left_k[valid]
     bins = np.floor((np.arctan2(y, x) + HALF_FOV) / BIN).astype(np.int64)
     inside = (bins >= 0) & (bins < BINS)
     seen = np.bincount(bins[inside], minlength=BINS)
