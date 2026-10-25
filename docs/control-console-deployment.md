@@ -766,3 +766,9 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
   - 验证：服务 active，对外 6 条连接。
   - 地面标定：同时写入 `~/workspace-agent/agent-data/ai-ugv-car/pi-agent/depth-floor.json`（0600；镜头离地 0.147 m，俯 10.5°，横滚 -0.5°）。
   - 回滚：两个环境装回 `releases/0.12.1/`。
+- **0.8.0 的问题（14:4x，用户报告）**：
+  - 现象：自动探索第一段就失败，`ugv-ros-op navigate: error: argument --watch-frontier: expected one argument`。
+  - 原因：navctl 把边界中心作为两个参数传进去（`--watch-frontier -0.054,0.488`），argparse 把以「-」开头、又带逗号的值当成了另一个选项。坐标本身的负数（`-0.5`）argparse 认得，不受影响。
+  - 后果：解析失败发生在导航之前，车没动。
+  - 漏掉的原因：测试里的假 `ros-op` 不解析参数，预检只跑了 `frontier`。
+  - 0.8.1 改为一个参数 `--watch-frontier=FX,FY`，并新增回归测试：用 argparse 解析 navctl 实际传出的参数（负坐标）。

@@ -300,7 +300,9 @@ class NavCtl:
         self.check_battery(battery_gate)
         watch = []
         if watch_frontier is not None:
-            watch = ["--watch-frontier", f"{watch_frontier[0]:.3f},{watch_frontier[1]:.3f}"]
+            # One token with "=": argparse takes a separate "-0.05,0.49" for an option and
+            # refused the leg (0.8.0, 2026-10-25); a plain "-0.05" passes as a number.
+            watch = [f"--watch-frontier={watch_frontier[0]:.3f},{watch_frontier[1]:.3f}"]
         with self.armed():
             return self.json_op(
                 "navigate", str(pose.x), str(pose.y), str(pose.yaw),
