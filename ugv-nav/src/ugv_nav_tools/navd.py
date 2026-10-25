@@ -669,6 +669,9 @@ class Navd:
         A saved map is loaded again (its pose is then set on the map page as after any
         load) and mapping starts afresh. Restarting navd itself (a deploy) finds this
         boot's id in `marker` and leaves a stopped container alone, e.g. after standby.
+        Below the start gate it starts nothing: on 2026-10-25 the pack browned the Pi
+        out at about 9.6 V, the UPS brought it back, and the LiDAR, depth camera and
+        Nav2 this started would only have hastened the next brown-out.
         """
         with contextlib.suppress(OSError):
             if marker.read_text().strip() == boot_id:
@@ -682,6 +685,12 @@ class Navd:
         marker.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         marker.write_text(boot_id + "\n")
         if state.startswith("running"):
+            return None
+        volts = self.pack_volts()
+        if volts is not None and volts < BATTERY_START_V:
+            LOGGER.warning(
+                "boot start: battery %.2f V below %.1f V, nothing started", volts, BATTERY_START_V
+            )
             return None
         mode = self.mode()
         name = mode["map"]
@@ -701,6 +710,19 @@ class Navd:
         job.detail = {**job.detail, "boot": True}
         LOGGER.info("boot start: %s %s", job.op, job.detail)
         return job
+
+    def pack_volts(self, tries: int = 5) -> float | None:
+        """The pack voltage pi-agent reports (T1001 v), or None if it does not answer."""
+        for attempt in range(tries):  # pi-agent may still be opening the UART after boot
+            try:
+                volts = (self.ctl.board.status().get("telemetry") or {}).get("v")
+            except (BoardError, OSError, ValueError):
+                volts = None
+            if isinstance(volts, (int, float)) and volts > 0:
+                return float(volts)
+            if attempt + 1 < tries:
+                self.ctl.sleep(2.0)
+        return None
 
     def odometer(self) -> tuple[float, float] | None:
         """Both wheels' odometers (m, T1001 odl/odr) from pi-agent, or None."""

@@ -17,6 +17,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from ugv_nav_tools.board_client import BoardError
 from ugv_nav_tools.map_files import write_pgm
 from ugv_nav_tools.navctl import NavCtl, Settings
 from ugv_nav_tools.navd import (
@@ -688,6 +689,18 @@ def test_boot_start_brings_the_last_mode_back_once_per_boot(tmp_path: Path) -> N
     (navd.ctl.settings.maps / "room.yaml").unlink()
     job = navd.boot_start(marker, "boot-2")
     assert job is not None and job.op == "mapping" and job.detail == {"boot": True}
+
+
+def test_boot_start_leaves_the_stack_off_on_a_low_battery(tmp_path: Path) -> None:
+    """2026-10-25: the pack browned the Pi out near 9.6 V; starting Nav2 would hasten it."""
+    navd, run, deferred = make_navd(tmp_path, volts=9.76)
+    marker = tmp_path / "boot.id"
+    navd.inspect = lambda _: "exited"
+    assert navd.boot_start(marker, "boot-1") is None
+    assert marker.read_text() == "boot-1\n" and not deferred.pending and not run.calls
+    navd.ctl.board.status.side_effect = BoardError("no pi-agent yet")  # type: ignore[attr-defined]
+    job = navd.boot_start(tmp_path / "other.id", "boot-1")  # unknown voltage: start as before
+    assert job is not None and job.op == "mapping"
 
 
 def test_boot_start_waits_for_docker_and_skips_a_running_container(tmp_path: Path) -> None:
