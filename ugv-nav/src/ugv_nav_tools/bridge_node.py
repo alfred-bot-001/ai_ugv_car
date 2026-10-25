@@ -1,7 +1,8 @@
-"""ROS2 node between Nav2 and pi-agent: telemetry out, gated /cmd_vel in.
+"""ROS2 node between Nav2 and pi-agent: telemetry and the front depth scan out, gated
+/cmd_vel in.
 
-Logic lives in board_client, wheel_odometry and motion_gate (unit-tested without ROS);
-this module only wires them to topics. Run inside the ugv-nav container.
+Logic lives in board_client, wheel_odometry, motion_gate and depth_layer (unit-tested
+without ROS); this module only wires them to topics. Run inside the ugv-nav container.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from typing import Any
 import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
+from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.time import Time
@@ -23,6 +25,8 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 from .board_client import BoardClient, BoardError
+from .depth_layer import FRAME as DEPTH_FRAME
+from .depth_layer import DepthScan, parse_depth_scan
 from .motion_gate import STALE_SECONDS, Perception, front_ranges, gate, rotation_space_clear
 from .stall import BodyStallWatch, Pose2D, Sample, motion
 from .wheel_odometry import WheelOdometry
@@ -32,6 +36,8 @@ HEALTH_FILE = Path("/tmp/board_health.json")
 TELEMETRY_MAX_AGE = 0.3
 REQUIRED = ("odl", "odr", "L", "R", "v")
 STALL_NOTE = "stalled: wheels turning, body still"
+# An older pi-agent refuses status requests that ask for depth; ask again this much later.
+DEPTH_RETRY_S = 60.0
 
 
 class BoardBridge(Node):  # type: ignore[misc]
@@ -42,6 +48,11 @@ class BoardBridge(Node):  # type: ignore[misc]
         self.odom = self.create_publisher(Odometry, "odom_wheel", 20)
         self.battery = self.create_publisher(BatteryState, "ugv/voltage", 5)
         self.status = self.create_publisher(String, "board/status", 5)
+        self.depth = self.create_publisher(LaserScan, "depth_scan", qos_profile_sensor_data)
+        self.depth_sequence: int | None = None
+        self.depth_at = 0.0
+        self.depth_refused_at = -DEPTH_RETRY_S
+        self.depth_note = ""
         self.create_subscription(Twist, "cmd_vel", self.on_cmd_vel, 10)
         self.create_subscription(Odometry, "odom_rf2o", self.on_laser_odom, 10)
         self.create_subscription(LaserScan, "scan", self.on_scan, qos_profile_sensor_data)
@@ -133,7 +144,7 @@ class BoardBridge(Node):  # type: ignore[misc]
     def poll(self) -> None:
         now = time.monotonic()
         try:
-            data = self.client.status()
+            data = self.board_status(now)
             telemetry = data["telemetry"]
             values = [telemetry.get(k) for k in REQUIRED]
             valid = all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
@@ -144,7 +155,10 @@ class BoardBridge(Node):  # type: ignore[misc]
                 self.publish(telemetry)
                 self.check_stall(now)
             if now - self.last_status > 1:
+                data.pop("depth_scan", None)
                 data |= {
+                    "depth_age": now - self.depth_at if self.depth_at else None,
+                    "depth_note": self.depth_note,
                     "command_note": self.command_note,
                     "laser_odom_age": now - self.seen.laser_odom_at,
                     "scan_age": now - self.seen.scan_at,
@@ -158,6 +172,48 @@ class BoardBridge(Node):  # type: ignore[misc]
             if now - self.last_status > 1:
                 self.status.publish(String(data=json.dumps({"ok": False, "error": str(error)})))
                 self.last_status = now
+
+    def board_status(self, now: float) -> dict[str, Any]:
+        """pi-agent's status, asking for the depth scan too; publishes a new scan."""
+        if now - self.depth_refused_at < DEPTH_RETRY_S:
+            return self.client.status()
+        try:
+            data = self.client.status(depth=True)
+        except BoardError as error:
+            data = self.client.status()  # still failing: the caller handles that
+            self.depth_refused_at = now
+            self.note_depth(f"pi-agent refused the depth scan: {error}"[:200])
+            return data
+        try:
+            scan = parse_depth_scan(data.get("depth_scan"))
+        except ValueError as error:
+            self.note_depth(str(error))
+            return data
+        if scan is not None and scan.sequence != self.depth_sequence:
+            self.depth_sequence = scan.sequence
+            self.depth_at = now
+            self.publish_depth(scan)
+            self.note_depth("")
+        return data
+
+    def note_depth(self, note: str) -> None:
+        if note and note != self.depth_note:
+            self.get_logger().warning(note)
+        self.depth_note = note
+
+    def publish_depth(self, scan: DepthScan) -> None:
+        message = LaserScan()
+        stamp = self.get_clock().now() - Duration(nanoseconds=int(scan.age * 1e9))
+        message.header.stamp = stamp.to_msg()
+        message.header.frame_id = DEPTH_FRAME
+        message.angle_min = scan.angle_min
+        message.angle_max = scan.angle_max
+        message.angle_increment = scan.angle_increment
+        message.scan_time = 0.2
+        message.range_min = 0.05
+        message.range_max = scan.range_max
+        message.ranges = scan.ranges
+        self.depth.publish(message)
 
     def check_stall(self, now: float) -> None:
         """Stop and end the arm session when the wheels turn but the body stays put.

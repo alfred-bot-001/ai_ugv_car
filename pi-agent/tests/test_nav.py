@@ -5,7 +5,7 @@ import os
 import socket
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -180,6 +180,23 @@ def test_status_is_read_only_and_requests_fast_telemetry(rig: tuple[NavBridge, M
     assert status["ok"] and status["telemetry"]["v"] == 12.1 and not status["nav_owned"]
     assert nav.board.observe_until > time.monotonic()
     assert not nav.board.guard.lease
+    assert "depth_scan" not in status
+
+
+def test_status_carries_the_depth_scan_only_when_asked(rig: tuple[NavBridge, Mock]) -> None:
+    nav, _ = rig
+    assert nav.dispatch({"op": "status", "depth": True})["ok"]  # no depth camera: no key
+    asks: list[int] = []
+    nav.depth = lambda: asks.append(1) or {"sequence": 4, "ranges_mm": [0, 930, None]}
+    assert "depth_scan" not in nav.dispatch({"op": "status"}) and not asks
+    status = nav.dispatch({"op": "status", "depth": True})
+    assert status["depth_scan"]["ranges_mm"] == [0, 930, None] and asks == [1]
+    nav.depth = lambda: None  # no calibrated, fresh scan yet
+    assert nav.dispatch({"op": "status", "depth": True})["depth_scan"] is None
+    with pytest.raises(ValueError):
+        nav.dispatch({"op": "status", "depth": "yes"})
+    with pytest.raises(ValueError):
+        nav.dispatch({"op": "status", "scan": True})
 
 
 def test_motion_needs_arm_then_obeys_lease_and_watchdog(rig: tuple[NavBridge, Mock]) -> None:
@@ -261,7 +278,10 @@ def test_socket_round_trip_and_permissions(rig: tuple[NavBridge, Mock]) -> None:
         nav.start()
         path = nav.root / "board.sock"
         deadline = time.monotonic() + 2
-        while not path.exists() and time.monotonic() < deadline:
+        # The socket exists from bind() and is 0600 one step later (os.chmod).
+        while time.monotonic() < deadline:
+            if path.exists() and path.stat().st_mode & 0o777 == 0o600:
+                break
             time.sleep(0.01)
         assert path.stat().st_mode & 0o777 == 0o600
         with socket.socket(socket.AF_UNIX) as client:
@@ -323,11 +343,38 @@ def test_runaway_bounds_sit_above_each_mode_ceiling() -> None:
     assert PWM_LIMIT < NAV_RUNAWAY_SPEED == 0.3 < RUNAWAY_SPEED
 
 
-def feed_wheels(uart: Mock, left: float, right: float = 0.0) -> None:
-    """Let the reader thread (25 ms ticks) see this wheel feedback for a few ticks."""
+def feed_wheels(
+    uart: Mock,
+    left: float,
+    right: float = 0.0,
+    board: Board | None = None,
+    until: Callable[[], bool] | None = None,
+) -> None:
+    """Feed this wheel feedback until the board has read it and `until` holds (>= 0.15 s).
+
+    With a board, its guard gets heartbeats meanwhile, as the Mini sends every 0.2 s.
+    Sleeps can overshoot a lot (macOS coalesces timers: sleep(0.025) took 0.16 s, so the
+    watchdog ticks that slowly too): after one heartbeat and a fixed sleep the lease timed
+    out on its own, or the watchdog had not read the feedback under test yet.
+    """
     frame = {"T": 1001, "L": left, "R": right, "v": 12.1, "pan": 0, "tilt": 0}
     uart.read.return_value = json.dumps(frame).encode() + b"\n"
-    time.sleep(0.15)
+    start = time.monotonic()
+
+    def done() -> bool:
+        if time.monotonic() - start < 0.15:
+            return False
+        if board is not None and (board.telemetry.get("L"), board.telemetry.get("R")) != (
+            left,
+            right,
+        ):
+            return False
+        return until is None or until()
+
+    while not done() and time.monotonic() - start < 2.0:
+        if board is not None:
+            board.guard.heartbeat()
+        time.sleep(0.02)
 
 
 def test_navigation_keeps_the_tight_runaway_bound_and_the_joystick_restores_it(
@@ -337,11 +384,11 @@ def test_navigation_keeps_the_tight_runaway_bound_and_the_joystick_restores_it(
     board = nav.board
     # Fresh board: the absolute bound applies, the factory speed is not a fault.
     assert board.runaway == RUNAWAY_SPEED
-    feed_wheels(uart, 1.3, 1.3)
+    feed_wheels(uart, 1.3, 1.3, board)
     assert board.health_error() == ""
-    feed_wheels(uart, 1.61)
+    feed_wheels(uart, 1.61, 0.0, board)
     assert "速度" in board.health_error()
-    feed_wheels(uart, 0.0)
+    feed_wheels(uart, 0.0, 0.0, board)
     # A navigation command (as NavBridge sends it) tightens the bound to 0.3.
     board.guard.heartbeat()
     lease = board.acquire()
@@ -352,13 +399,13 @@ def test_navigation_keeps_the_tight_runaway_bound_and_the_joystick_restores_it(
     )
     assert board.runaway == NAV_RUNAWAY_SPEED
     assert board.hold_maximum == PWM_LIMIT
-    feed_wheels(uart, 0.25, 0.25)
+    feed_wheels(uart, 0.25, 0.25, board)
     assert board.guard.lease == lease and not board.guard.estopped
     # The watchdog uses the same bound: an over-speed wheel is an emergency stop.
-    feed_wheels(uart, 0.31)
+    feed_wheels(uart, 0.31, 0.0, board, until=lambda: board.guard.estopped)
     assert board.guard.estopped and not board.guard.lease
     assert wheel_writes(uart)[-1] == {"T": 1, "L": 0.0, "R": 0.0}
-    feed_wheels(uart, 0.0)
+    feed_wheels(uart, 0.0, 0.0, board)
     # The next joystick command restores the absolute bound (capped at RUNAWAY_SPEED).
     board.guard.reset()
     board.guard.heartbeat()
@@ -366,9 +413,9 @@ def test_navigation_keeps_the_tight_runaway_bound_and_the_joystick_restores_it(
     board.move(Stick(x=0, y=1, sequence=1, speed=1.3, target="wheels", lease=lease), runaway=5.0)
     assert board.runaway == RUNAWAY_SPEED
     assert board.hold_maximum == 1.3
-    feed_wheels(uart, 1.3, 1.3)
+    feed_wheels(uart, 1.3, 1.3, board)
     assert board.guard.lease == lease and not board.guard.estopped
-    feed_wheels(uart, 0.0)
+    feed_wheels(uart, 0.0, 0.0, board)
     board.stop()
 
 

@@ -67,6 +67,9 @@ FIRMWARE_TRACK_WIDTH_M = 0.172  # what the factory firmware uses inside T13
 class StatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     op: Literal["status"]
+    # The ugv-nav bridge asks for the front depth scan (Nav2 costmaps); asking keeps the
+    # depth camera on (agent.nav_depth_scan).
+    depth: bool = Field(default=False, strict=True)
 
 
 class StopRequest(BaseModel):
@@ -253,6 +256,8 @@ class NavBridge:
         self.threads: list[threading.Thread] = []
         # Told about safety stops (the map page log); must not raise.
         self.notify: Callable[[str], None] | None = None
+        # The newest front depth scan for Nav2, or None (set by the agent when configured).
+        self.depth: Callable[[], dict[str, Any] | None] | None = None
 
     @property
     def owned(self) -> bool:
@@ -267,7 +272,10 @@ class NavBridge:
     def dispatch(self, raw: Any) -> dict[str, Any]:
         request = REQUEST.validate_python(raw)
         if isinstance(request, StatusRequest):
-            return self._status()
+            reply = self._status()
+            if request.depth and self.depth is not None:
+                reply["depth_scan"] = self.depth()
+            return reply
         if isinstance(request, ProbeRequest):
             return self._probe(request)
         if isinstance(request, StopRequest):

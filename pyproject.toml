@@ -16,7 +16,7 @@ ai-tv-pet-pi-agent = { workspace = true }
 ai-ugv-car-nav-tools = { workspace = true }
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-cov>=5", "httpx>=0.27", "ruff>=0.9", "mypy>=1.14", "types-pyserial", "playwright>=1.49"]
+dev = ["pytest>=8", "pytest-cov>=5", "httpx>=0.27", "ruff>=0.9", "mypy>=1.14", "types-pyserial", "playwright>=1.49", "numpy>=1.26"]
 
 [tool.ruff]
 target-version = "py311"
@@ -44,6 +44,12 @@ ignore_missing_imports = true
 # tvpet_pi.depth_worker runs in the Pi's pose-venv (OpenCV and the OpenNI2 bindings).
 module = ["cv2", "openni", "openni.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# speech.py's numpy import keeps its ignore for environments without numpy; the dev group
+# has numpy now (for tvpet_pi.depth_scan's tests), which makes that ignore unused here.
+module = ["tvpet_console.speech"]
+warn_unused_ignores = false
 
 [tool.pytest.ini_options]
 testpaths = ["robot-console/tests", "pi-agent/tests", "ugv-nav/tests"]

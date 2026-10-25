@@ -10,6 +10,9 @@ and every pi-agent check behind it.
 
 One job runs at a time. `stop` is never queued: it closes the motion window at once
 (pi-agent's watchdog then stops the wheels within 25 ms) and cancels Nav2 goals.
+
+After the Pi boots, navd starts the container again in the mode the map page last chose
+(boot_start); docker's own restart policy stays "no", so navd alone starts the stack.
 """
 
 from __future__ import annotations
@@ -64,6 +67,12 @@ READY_TIMEOUT_S = 90.0
 # (2026-10-24: requiring it at load time failed every load after two 90 s waits).
 POSE_READY_TIMEOUT_S = 45.0
 READY_POLL_S = 3.0
+BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+# navd starts after docker.service; this only covers a slow docker on a cold boot.
+BOOT_DOCKER_WAIT_S = 120.0
+# Mapping that boot_start began, with the wheels moved less than this since, holds no
+# map worth keeping, so standby may stop it; otherwise a reboot meant no sleep at all.
+BOOT_STILL_M = 0.2
 MANAGERS = {"navigation": "导航", "localization": "定位"}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 ACTIVE = re.compile(r"\[lifecycle_manager_(\w+)\]: Managed nodes are active")
@@ -336,6 +345,8 @@ class Navd:
         ctl.cancelled = self.cancel_event.is_set
         self.container = ("unknown", -math.inf)
         self.current: Job | None = None  # the running job, for progress updates
+        # Wheel odometers (odl, odr) when boot_start began mapping; None otherwise.
+        self.boot_odometer: tuple[float, float] | None = None
 
     def handle(self, raw: Any) -> dict[str, Any]:
         request = parse_request(raw)
@@ -353,7 +364,7 @@ class Navd:
             self.ctl.lidar_power(True)
             return {"ok": True, "lidar": self.ctl.lidar}
         if request.op == "standby" and self.container_state().startswith("running"):
-            if self.mode()["mode"] == "mapping":
+            if self.mode()["mode"] == "mapping" and not self.boot_map_untouched():
                 raise ValueError("正在建图，地图还没保存，不休眠")
         return {"ok": True, "job": self.submit(request).to_json()}
 
@@ -371,9 +382,14 @@ class Navd:
             mode = {"mode": "odometry", "map": None}
         with self.lock:
             job = self.job.to_json() if self.job else None
+        container = self.container_state()
         return {
-            "container": self.container_state(),
+            "container": container,
             **mode,
+            # pi-agent stays awake for this (and navd refuses standby).
+            "unsaved_map": container.startswith("running")
+            and mode["mode"] == "mapping"
+            and not self.boot_map_untouched(),
             "job": job,
             "lidar": self.ctl.lidar,
             "now": self.clock(),
@@ -386,6 +402,8 @@ class Navd:
             self.cancel_event.clear()
             job = Job(uuid.uuid4().hex[:12], request.op, describe(request), self.clock())
             self.job = job
+            if request.op in ("mapping", "localize", "explore", "save", "standby"):
+                self.boot_odometer = None  # someone chose a mode, or the map changes
         if request.op in ("mapping", "localize"):
             self.container = ("starting", self.monotonic())
         LOGGER.info("job %s %s %s", job.id, job.op, job.detail)
@@ -634,6 +652,64 @@ class Navd:
         reason = FAULT_TEXT.get(abort, "没到达")
         return "failed", f"巡航中止：{where}{reason}" + done, result
 
+    def boot_start(self, marker: Path, boot_id: str) -> Job | None:
+        """After the Pi boots, start the container in its last mode; once per boot.
+
+        A saved map is loaded again (its pose is then set on the map page as after any
+        load) and mapping starts afresh. Restarting navd itself (a deploy) finds this
+        boot's id in `marker` and leaves a stopped container alone, e.g. after standby.
+        """
+        with contextlib.suppress(OSError):
+            if marker.read_text().strip() == boot_id:
+                return None
+        deadline = self.monotonic() + BOOT_DOCKER_WAIT_S
+        while (state := self.inspect(self.ctl.settings.container)) == "unknown":
+            if self.monotonic() >= deadline:
+                LOGGER.warning("boot start: docker did not answer")
+                return None
+            self.ctl.sleep(READY_POLL_S)
+        marker.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        marker.write_text(boot_id + "\n")
+        if state.startswith("running"):
+            return None
+        mode = self.mode()
+        name = mode["map"]
+        if (
+            mode["mode"] == "localization"
+            and name
+            and (self.ctl.settings.maps / f"{name}.yaml").exists()
+        ):
+            job = self.submit(Request("localize", map=name))
+        else:
+            job = self.submit(Request("mapping"))
+            for _ in range(5):  # pi-agent may still be opening the UART
+                if (odometer := self.odometer()) is not None:
+                    self.boot_odometer = odometer
+                    break
+                self.ctl.sleep(2.0)
+        job.detail = {**job.detail, "boot": True}
+        LOGGER.info("boot start: %s %s", job.op, job.detail)
+        return job
+
+    def odometer(self) -> tuple[float, float] | None:
+        """Both wheels' odometers (m, T1001 odl/odr) from pi-agent, or None."""
+        try:
+            telemetry = self.ctl.board.status().get("telemetry") or {}
+        except (BoardError, OSError, ValueError):
+            return None
+        left, right = telemetry.get("odl"), telemetry.get("odr")
+        if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+            return float(left), float(right)
+        return None
+
+    def boot_map_untouched(self) -> bool:
+        """Mapping that boot_start began, and the wheels have not moved since."""
+        start = self.boot_odometer
+        now = self.odometer() if start is not None else None
+        if start is None or now is None:
+            return False
+        return max(abs(now[0] - start[0]), abs(now[1] - start[1])) < BOOT_STILL_M
+
     def switch_mode(self, *, mapping: bool, name: str | None = None) -> str:
         """Recreate the container and wait for its lifecycle managers; one retry."""
         needed = {"navigation"} if mapping else {"localization"}
@@ -741,6 +817,12 @@ def main() -> None:
     ctl = NavCtl(Settings(), echo=LOGGER.info)
     navd = Navd(ctl)
     ctl.disarm()  # a restart never inherits a motion window
+    boot_id = BOOT_ID.read_text().strip()
+
+    def start_after_boot() -> None:
+        navd.boot_start(args.socket.parent / "boot.id", boot_id)
+
+    spawn(start_after_boot)
     stopping = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stopping.set())
     signal.signal(signal.SIGINT, lambda *_: stopping.set())

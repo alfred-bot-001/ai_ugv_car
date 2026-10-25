@@ -6,13 +6,17 @@ navigation:=true   Nav2 planner/controller; /cmd_vel still passes the bridge gat
                    pi-agent, and moves only while ugv-navctl holds a bounded arm window.
 """
 
+import tempfile
+
+import yaml
 from ament_index_python.packages import get_package_share_directory
-from launch import LaunchDescription
+from launch import LaunchContext, LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
     ExecuteProcess,
     IncludeLaunchDescription,
+    OpaqueFunction,
     RegisterEventHandler,
 )
 from launch.conditions import IfCondition
@@ -22,7 +26,10 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
+from ugv_nav_tools.nav_params import without_keepout
+
 CONFIG = "/app/config"
+COMMON = {"use_sim_time": "false", "autostart": "true", "use_composition": "False"}
 
 
 def keepout_servers() -> list[Node]:
@@ -62,10 +69,28 @@ def keepout_servers() -> list[Node]:
     ]
 
 
+def navigation(context: LaunchContext) -> list[IncludeLaunchDescription]:
+    """Nav2 on nav.yaml; with no keepout mask, on a copy without the keepout filter."""
+    params = f"{CONFIG}/nav.yaml"
+    if not LaunchConfiguration("keepout").perform(context):
+        with open(params, encoding="utf-8") as source:
+            values = without_keepout(yaml.safe_load(source))
+        with tempfile.NamedTemporaryFile("w", prefix="nav-", suffix=".yaml", delete=False) as out:
+            yaml.safe_dump(values, out)
+            params = out.name
+    nav2 = get_package_share_directory("nav2_bringup") + "/launch"
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(f"{nav2}/navigation_launch.py"),
+            launch_arguments={"params_file": params, **COMMON}.items(),
+            condition=IfCondition(LaunchConfiguration("navigation")),
+        )
+    ]
+
+
 def generate_launch_description() -> LaunchDescription:
     nav2 = get_package_share_directory("nav2_bringup") + "/launch"
     slam = get_package_share_directory("slam_toolbox") + "/launch/online_async_launch.py"
-    common = {"use_sim_time": "false", "autostart": "true", "use_composition": "False"}
     return LaunchDescription(
         [
             # Any component exiting tears the stack down; a half-running Nav2 is worse.
@@ -93,7 +118,7 @@ def generate_launch_description() -> LaunchDescription:
                 launch_arguments={
                     "map": LaunchConfiguration("map"),
                     "params_file": f"{CONFIG}/nav.yaml",
-                    **common,
+                    **COMMON,
                 }.items(),
                 condition=IfCondition(LaunchConfiguration("localization")),
             ),
@@ -118,10 +143,6 @@ def generate_launch_description() -> LaunchDescription:
                 output="screen",
             ),
             *keepout_servers(),
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(f"{nav2}/navigation_launch.py"),
-                launch_arguments={"params_file": f"{CONFIG}/nav.yaml", **common}.items(),
-                condition=IfCondition(LaunchConfiguration("navigation")),
-            ),
+            OpaqueFunction(function=navigation),
         ]
     )

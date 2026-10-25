@@ -16,6 +16,8 @@ from .capture import Frame
 from .depth_wire import read_frame
 
 DEPTH_FPS = 5
+# Floor calibration for the Nav2 scan (tvpet_pi.depth_worker --calibrate writes it).
+DEFAULT_FLOOR = "~/workspace-agent/agent-data/ai-ugv-car/pi-agent/depth-floor.json"
 
 
 @dataclass(frozen=True)
@@ -28,7 +30,9 @@ class DepthFrame(Frame):
 class DepthCamera:
     """CaptureWorker adapter: open starts the worker, read returns its next frame."""
 
-    def __init__(self, python: str, openni: str, command: list[str] | None = None) -> None:
+    def __init__(
+        self, python: str, openni: str, floor: str = "", command: list[str] | None = None
+    ) -> None:
         self.python = python
         self.openni = openni
         self.command = command or [
@@ -39,6 +43,7 @@ class DepthCamera:
             openni,
             "--fps",
             str(DEPTH_FPS),
+            *(["--floor", floor] if floor else []),
         ]
         self.process: subprocess.Popen[bytes] | None = None
 

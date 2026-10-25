@@ -92,6 +92,8 @@ sys.stdin.buffer.read()  # like the real worker: exit when the agent closes stdi
 def test_camera_reads_the_worker_and_stops_it() -> None:
     camera = DepthCamera("python", "/openni", command=[sys.executable, "-c", FAKE_WORKER])
     assert DepthCamera("/py", "/o").command[:3] == ["/py", "-m", "tvpet_pi.depth_worker"]
+    assert "--floor" not in DepthCamera("/py", "/o").command
+    assert DepthCamera("/py", "/o", "/f.json").command[-2:] == ["--floor", "/f.json"]
     camera.open()
     first, second = camera.read(), camera.read()
     assert isinstance(first, DepthFrame) and first.sequence == 1 and second.meta["centre_mm"] == 802
@@ -117,9 +119,13 @@ class Worker:
         self.error = ""
         self.value = value
         self.renewed = 0
+        self.started = 0
+        self.started_at = 0.0
 
     def start(self) -> None:
         self.active = True
+        self.started += 1
+        self.started_at = time.monotonic()
 
     def stop(self) -> None:
         self.active = False
@@ -196,3 +202,43 @@ def test_depth_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "libOpenNI2.so").touch()
     assert runtime.status()["depth_camera"]["state"] == "available"
     assert AgentRuntime({}).status()["depth_camera"]["state"] == "disabled"
+
+
+def test_navigation_keeps_depth_on_and_gets_fresh_scans_only(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime = AgentRuntime({"depth_openni": str(tmp_path), "pose_python": "/py"})
+        scan = {"angle_min": -0.6, "angle_increment": 0.0175, "range_max": 2.0, "ranges_mm": [0]}
+        fresh = DepthFrame(7, time.monotonic_ns(), 0, JPEG, {"centre_mm": 900, "scan": scan})
+        worker = Worker(fresh)
+        runtime.depth_camera = worker  # type: ignore[assignment]
+        now = time.monotonic()
+        await runtime.depth_tick(now)
+        assert not worker.started  # nobody asked yet
+        reply = runtime.nav_depth_scan()  # the bridge's board status poll
+        assert reply == {"sequence": 7, "age": reply["age"], **scan} and reply["age"] < 0.5
+        await runtime.depth_tick(time.monotonic())
+        assert worker.active and worker.started == 1
+        await runtime.depth_tick(time.monotonic())
+        assert worker.renewed == 1 and worker.started == 1
+        # The depth view closing does not stop what Nav2 still uses.
+        runtime.control = Socket()  # type: ignore[assignment]
+        message = {"id": "a", "action": "media.set", "args": {"channel": "depth", "enabled": False}}
+        await runtime.command(message)
+        assert worker.active
+        # Stale or uncalibrated frames give no scan.
+        worker.value = DepthFrame(8, time.monotonic_ns() - 2 * 10**9, 0, JPEG, {"scan": scan})
+        assert runtime.nav_depth_scan() is None
+        worker.value = DepthFrame(9, time.monotonic_ns(), 0, JPEG, {"centre_mm": 900})
+        assert runtime.nav_depth_scan() is None
+        # Once the bridge stops asking, depth goes off.
+        await runtime.depth_tick(runtime.depth_nav_until + 0.1)
+        assert not worker.active
+        # A worker that failed is not restarted in a tight loop.
+        runtime.depth_nav_until = time.monotonic() + 30
+        worker.error, worker.started_at = "device busy", time.monotonic()
+        await runtime.depth_tick(time.monotonic())
+        assert worker.started == 1
+        await runtime.depth_tick(time.monotonic() + 11)
+        assert worker.started == 2
+
+    asyncio.run(scenario())

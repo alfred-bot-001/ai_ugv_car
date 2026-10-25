@@ -607,6 +607,71 @@ def test_standby_refuses_while_mapping_or_busy(tmp_path: Path) -> None:
     assert navd.status()["lidar"] == "on"
 
 
+def odometers(navd: Navd, left: float, right: float) -> None:
+    navd.ctl.board.status.return_value = {  # type: ignore[attr-defined]
+        "ok": True,
+        "telemetry": {"L": 0.0, "R": 0.0, "v": 12.0, "odl": left, "odr": right},
+    }
+
+
+def test_boot_start_brings_the_last_mode_back_once_per_boot(tmp_path: Path) -> None:
+    """A reboot left the container exited for 15 h (2026-10-25): navd starts it now."""
+    navd, run, deferred = make_navd(tmp_path)
+    marker = tmp_path / "run" / "boot.id"
+    write_map(navd.ctl.settings.maps, "room")
+    localized(navd)
+    navd.inspect = lambda _: "exited"
+    job = navd.boot_start(marker, "boot-1")
+    assert job is not None and job.op == "localize" and job.detail == {"map": "room", "boot": True}
+    assert marker.read_text() == "boot-1\n"
+    deferred.run_all()
+    assert navd.job is not None and navd.job.state == "ok" and "room" in navd.job.message
+    assert ["sudo", "-n", "docker", "compose", "up", "-d", "--force-recreate"] in run.calls
+    # Restarting navd in the same boot (a deploy) leaves the container alone.
+    assert navd.boot_start(marker, "boot-1") is None and not deferred.pending
+    # The next boot starts it again; a saved map that is gone means mapping instead.
+    (navd.ctl.settings.maps / "room.yaml").unlink()
+    job = navd.boot_start(marker, "boot-2")
+    assert job is not None and job.op == "mapping" and job.detail == {"boot": True}
+
+
+def test_boot_start_waits_for_docker_and_skips_a_running_container(tmp_path: Path) -> None:
+    navd, run, deferred = make_navd(tmp_path)
+    marker = tmp_path / "boot.id"
+    answers = iter(["unknown", "unknown", "running healthy"])
+    navd.inspect = lambda _: next(answers)
+    assert navd.boot_start(marker, "boot-1") is None
+    assert marker.read_text() == "boot-1\n" and not deferred.pending and not run.calls
+    navd.inspect = lambda _: "unknown"  # docker never answers: no marker, try next start
+    assert navd.boot_start(tmp_path / "other.id", "boot-1") is None
+    assert not (tmp_path / "other.id").exists()
+
+
+def test_standby_may_stop_a_boot_mapping_run_until_the_wheels_move(tmp_path: Path) -> None:
+    navd, run, deferred = make_navd(tmp_path)
+    mapping_env(navd)
+    navd.inspect = lambda _: "exited"
+    odometers(navd, 3.0, 2.0)
+    job = navd.boot_start(tmp_path / "boot.id", "boot-1")
+    assert job is not None and job.op == "mapping" and navd.boot_odometer == (3.0, 2.0)
+    deferred.run_all()
+    navd.inspect = lambda _: "running healthy"
+    navd.container = ("running healthy", math.inf)  # cached until the end of the test
+    odometers(navd, 3.25, 2.0)  # driven by hand on the joystick: a map worth keeping
+    with pytest.raises(ValueError, match="正在建图"):
+        navd.handle({"op": "standby"})
+    odometers(navd, 3.1, 2.1)  # still where it booted: nothing to lose
+    assert navd.handle({"op": "standby"})["job"]["op"] == "standby"
+    deferred.run_all()
+    assert navd.boot_odometer is None and lidar_calls(run) == ["on", "off"]
+    # A mapping run someone chose is protected as before.
+    navd.boot_odometer = (3.1, 2.1)
+    navd.handle({"op": "mapping"})
+    deferred.run_all()
+    with pytest.raises(ValueError, match="正在建图"):
+        navd.handle({"op": "standby"})
+
+
 def test_wake_powers_the_lidar_on_at_once(tmp_path: Path) -> None:
     navd, run, deferred = make_navd(tmp_path)
     reply = navd.handle({"op": "wake"})

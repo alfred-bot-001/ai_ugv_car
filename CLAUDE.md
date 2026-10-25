@@ -15,9 +15,9 @@
 | 目录 | 包 / 版本 | 运行在 |
 | --- | --- | --- |
 | `robot-console/` | `tvpet_console`（ai-tv-pet-console 0.14.0），FastAPI 主控台，网页在 `src/tvpet_console/web/` | Mini（ssh `agent001`） |
-| `pi-agent/` | `tvpet_pi`（ai-tv-pet-pi-agent 0.12.1），设备代理，唯一的底盘 UART 所有者，含导航桥 `nav.py` 和 ToF 读取 `tof.py` | 车上 Pi 5（ssh `agent003`，用户 ws，免密 sudo） |
+| `pi-agent/` | `tvpet_pi`（ai-tv-pet-pi-agent 0.13.0），设备代理，唯一的底盘 UART 所有者，含导航桥 `nav.py` 和 ToF 读取 `tof.py` | 车上 Pi 5（ssh `agent003`，用户 ws，免密 sudo） |
 | `firmware/tof-bridge/` | Arduino sketch（arduino-cli，`esp32:esp32:XIAO_ESP32C5`） | 车头 XIAO ESP32-C5，USB 接 Pi |
-| `ugv-nav/` | `ugv_nav_tools`（ai-ugv-car-nav-tools 0.6.0）+ ROS2 Humble 容器（SLAM Toolbox、Nav2、RF2O、EKF）+ 主机服务 `ugv-navd` | Pi 的 docker 容器 `ugv-nav` |
+| `ugv-nav/` | `ugv_nav_tools`（ai-ugv-car-nav-tools 0.7.0）+ ROS2 Humble 容器（SLAM Toolbox、Nav2、RF2O、EKF）+ 主机服务 `ugv-navd` | Pi 的 docker 容器 `ugv-nav` |
 
 包名、launchd 标签、systemd 服务名、部署目录**刻意沿用 ai-tv-pet-***，线上部署依赖它们，不要改名。
 
@@ -45,7 +45,7 @@ uv run pytest --cov=tvpet_console --cov=tvpet_pi --cov=ugv_nav_tools --cov-fail-
 
 - **Mini 主控台**：运行目录 `/Users/agent001/workspace-agent/deploy/ai-tv-pet-console/`，launchd `com.ai-tv-pet.console`，公网 `https://car.aimaker.vip/`。本机 `uv build` 出 wheel，复制到 Mini，停服务后 `uv pip install --no-deps --reinstall` 进 `.venv`，wheel 存 `releases/`；重启用 `launchctl bootout/bootstrap gui/$(id -u)`。Mini 的 uv 在 `/opt/homebrew/bin/uv`。
 - **Pi 代理**：`/home/ws/deploy/ai-tv-pet-agent/`，systemd `ai-tv-pet-agent.service`；wheel 同时装进 `.venv` 和 `pose-venv`；私有配置 `private/agent.json`（0600，含 `nav_dir`）。
-- **ugv-nav**：`uv build --package ai-ugv-car-nav-tools --wheel --out-dir ugv-nav/dist` → `rsync --exclude .env ugv-nav/ agent003:/home/ws/deploy/ugv-nav/src/` → Pi 上 `sudo docker compose build` → `ugv-navctl mapping`。rsync 前先删掉 Pi 上 `src/dist/` 里的旧 wheel：Dockerfile 用通配符装 wheel，两个版本同时在就会构建失败（2026-10-25 踩过）。主机操作工具 `/home/ws/deploy/ugv-nav/.venv/bin/ugv-navctl`（status/stop/mapping/save/localize/pose/where/goal/patrol）。**容器重启会清空未保存的 SLAM 地图**，先确认再重启。地图页的建图、保存、加载、设位置、去这里、取消由主机服务 `ugv-navd`（systemd，用户 ws，socket `/home/ws/deploy/ugv-nav/run/ops.sock`，容器不挂载）调同一套 NavCtl 执行；单元文件在 `ugv-nav/systemd/`，代码更新后装进主机 `.venv`（`/home/ws/deploy/ai-tv-pet-agent/.venv/bin/pip --python .venv/bin/python install --no-deps --force-reinstall <wheel>`）并重启它。
+- **ugv-nav**：`uv build --package ai-ugv-car-nav-tools --wheel --out-dir ugv-nav/dist` → `rsync --exclude .env ugv-nav/ agent003:/home/ws/deploy/ugv-nav/src/` → Pi 上 `sudo docker compose build` → `ugv-navctl mapping`。rsync 前先删掉 Pi 上 `src/dist/` 里的旧 wheel：Dockerfile 用通配符装 wheel，两个版本同时在就会构建失败（2026-10-25 踩过）。主机操作工具 `/home/ws/deploy/ugv-nav/.venv/bin/ugv-navctl`（status/stop/mapping/save/localize/pose/where/goal/patrol）。**容器重启会清空未保存的 SLAM 地图**，先确认再重启。地图页的建图、保存、加载、设位置、去这里、取消由主机服务 `ugv-navd`（systemd，用户 ws，socket `/home/ws/deploy/ugv-nav/run/ops.sock`，容器不挂载）调同一套 NavCtl 执行；单元文件在 `ugv-nav/systemd/`，代码更新后装进主机 `.venv`（`/home/ws/deploy/ai-tv-pet-agent/.venv/bin/pip --python .venv/bin/python install --no-deps --force-reinstall <wheel>`）并重启它。Pi 开机后 navd 按 `.env` 的最后模式拉起容器（每次开机一次，记在 `run/boot.id`；navd 自己重启不拉起），docker 重启策略保持 `no`。
 - 每次升级前备份上一版（Pi 在 `backups/`、`releases/`），部署后实测健康状态再报告。
 
 ## 安全红线
@@ -53,7 +53,7 @@ uv run pytest --cov=tvpet_console --cov=tvpet_pi --cov=ugv_nav_tools --cov-fail-
 - **让车动之前必须确认用户在场、场地已清空**，每次新的运动测试都要重新确认；授权只由 `ugv-navctl` 写 `arm.json`，平时保持 `{"enabled": false}`。
 - 浏览器永远碰不到 ROS 和 UART：不开放 rosbridge / foxglove_bridge，命令一律经 Mini → Pi 代理。
 - 驱动运行时**不要对雷达串口（`/dev/ugv_lidar`，即 ttyUSB0）执行 `stty`**，会把容器里的驱动弄坏。
-- 休眠：Pi 代理半小时无交互（无命令、无人看视频/听音/开地图页、无导航任务、不在建图）就请 `ugv-navd` 执行 `standby`：停导航容器、用 `uhubctl` 切断雷达所在 USB 口（VL817 集线器 `1-1` 的 1 号口）的供电，并把车灯关掉；任何命令立即 `wake` 上电。正在建图（容器在跑且模式为 mapping）时 navd 拒绝休眠，防止丢未保存地图；定位模式会被停掉，醒来后要在地图页重新加载地图。手工开关：`ugv-navctl lidar on|off`。Pi 代理自己在沙箱里不能 sudo，所以开关只经 navd。
+- 休眠：Pi 代理半小时无交互（无命令、无人看视频/听音/开地图页、无导航任务、不在建图）就请 `ugv-navd` 执行 `standby`：停导航容器、用 `uhubctl` 切断雷达所在 USB 口（VL817 集线器 `1-1` 的 1 号口）的供电，并把车灯关掉；任何命令立即 `wake` 上电。正在建图（容器在跑且模式为 mapping）时 navd 拒绝休眠，防止丢未保存地图（例外：开机自动进入的建图、轮子没动过 0.2 m，navd 报 `unsaved_map: false`）；定位模式会被停掉，醒来后要在地图页重新加载地图。手工开关：`ugv-navctl lidar on|off`。Pi 代理自己在沙箱里不能 sudo，所以开关只经 navd。
 - ttyACM1 是底盘 ESP32 的 USB 串口，绕过 Pi 代理的保护；建议的 root-only udev 规则用户尚未批准，不要擅自加或用它控制车。
 - 运动参数（速度、停车距离、半径）放宽或收紧都要用户批准，并在配置注释里写明日期和理由。
 - 旧机器人服务和旧容器 `ai-home-nav` 保持停用，不作为失败时的降级方案。
@@ -65,7 +65,7 @@ uv run pytest --cov=tvpet_console --cov=tvpet_pi --cov=ugv_nav_tools --cov-fail-
 
 ## 硬件要点
 
-- LiDAR（LD19/LD06 类，230400 baud，约 10 Hz）在 ttyUSB0 → `/dev/ugv_lidar`；麦克风已换成杰理 USB 麦克风（ALSA `ugvmic`，只录音、48 kHz；原讯飞 M2 和 `/dev/m2_mic` 已拆除），扬声器 ALSA `ugvspk`；前置 Orbbec 初代 Gemini 的彩色相机是普通 UVC（`agent.json` 的 `front_camera`，by-id `usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_AY27552002R`，每帧在 EOI 后补 3～5 个零字节），深度走 OpenNI2（运行库在 Pi 的 `ai-tv-pet-agent/vendor/openni2-arm64/`，来源见其中 `SOURCE.txt`；`agent.json` 的 `depth_openni`，工作进程跑在 pose-venv，那里没有代理的依赖，只能从本包导入纯标准库的 `depth_wire`；驱动往 stdout 打的日志被转到 journal），**相机必须接车上的独立供电 USB 集线器**：接 Pi 自身 USB 口（总限流 600 mA）时激光投射器起不来，还会触发限流让雷达等 USB 设备掉线；底盘走 Pi 的 `/dev/ttyAMA0`，由 Pi 代理独占。
+- LiDAR（LD19/LD06 类，230400 baud，约 10 Hz）在 ttyUSB0 → `/dev/ugv_lidar`；麦克风已换成杰理 USB 麦克风（ALSA `ugvmic`，只录音、48 kHz；原讯飞 M2 和 `/dev/m2_mic` 已拆除），扬声器 ALSA `ugvspk`；前置 Orbbec 初代 Gemini 的彩色相机是普通 UVC（`agent.json` 的 `front_camera`，by-id `usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_AY27552002R`，每帧在 EOI 后补 3～5 个零字节），深度走 OpenNI2（运行库在 Pi 的 `ai-tv-pet-agent/vendor/openni2-arm64/`，来源见其中 `SOURCE.txt`；`agent.json` 的 `depth_openni`，工作进程跑在 pose-venv，那里没有代理的依赖，只能从本包导入 `depth_wire`、`depth_scan`（标准库和 numpy）；驱动往 stdout 打的日志被转到 journal；OpenNI 默认左右镜像，已关闭）。深度同时给 Nav2 当「虚拟激光」（导航设计 §7.5），需要地面标定文件 `~/workspace-agent/agent-data/ai-ugv-car/pi-agent/depth-floor.json`：车前有空地面、没人看深度、导航容器停着时，用 `pose-venv/bin/python -m tvpet_pi.depth_worker --openni …/vendor/openni2-arm64 --calibrate <文件>` 生成，**相机必须接车上的独立供电 USB 集线器**：接 Pi 自身 USB 口（总限流 600 mA）时激光投射器起不来，还会触发限流让雷达等 USB 设备掉线；底盘走 Pi 的 `/dev/ttyAMA0`，由 Pi 代理独占。
 - 云台两个舵机：水平 ID 2、俯仰 ID 1；固件 T133 限 ±180° / -30°～90°，Pi 代理取 ±170° / -30°～90°（2026-10-23 前是 ±45° / -15°～45°）。舵机零位用 `tvpet-gimbal-center --camera-facing-front`（固件 T502，写进舵机 EEPROM）校准，要先停 `ai-tv-pet-agent.service`。
 - ESP32 是较旧的 ugv_base_ros 固件：`T1` 是 m/s 目标速度 + PID（死区 PWM 23）；遥测 T1001 的 `odl/odr` 单位是米，`v` 是电池电压（伏）；没有电流和电量百分比。
 - 前置 ToF（DFRobot SEN0628 经 XIAO ESP32-C5 桥接）：Pi 上按 by-id 配置 `tof_port`（`/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_10:BD:A3:CF:46:78-if00`），不要写 `ttyACMn`；pi-agent 独占该串口，地面基准标定 `tvpet-tof calibrate` 要先停 `ai-tv-pet-agent.service`；基准文件在 `~/workspace-agent/agent-data/ai-ugv-car/pi-agent/tof-baseline.json`。配置留空即关闭。
