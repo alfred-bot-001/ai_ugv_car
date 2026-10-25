@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('../src/tvpet_console/web/app.js', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../src/tvpet_console/web/video.js', import.meta.url), 'utf8');
 const start = source.indexOf('function lightMessage');
 const end = source.indexOf('\n', source.indexOf('function lightState'));
 const context = {};
