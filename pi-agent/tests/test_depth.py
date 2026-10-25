@@ -4,13 +4,16 @@ import asyncio
 import io
 import json
 import struct
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
+from tvpet_pi import protocol
 from tvpet_pi.agent import AgentRuntime
-from tvpet_pi.depth import HEADER, DepthCamera, DepthFrame, encode_frame, read_frame
+from tvpet_pi.depth import DepthCamera, DepthFrame
+from tvpet_pi.depth_wire import HEADER, MAX_JPEG, encode_frame, read_frame
 
 JPEG = b"\xff\xd8depth\xff\xd9"
 
@@ -34,9 +37,51 @@ def test_frames_round_trip_and_bad_output_is_rejected() -> None:
         read_frame(io.BytesIO(HEADER.pack(14, 9) + b'{"sequence":1}'))
 
 
+# What pose-venv offers the worker: none of the agent's dependencies, fake camera modules.
+POSE_VENV_IMPORT = """
+import sys, types
+sys.modules["pydantic"] = None
+openni = types.ModuleType("openni")
+openni._openni2 = types.ModuleType("openni._openni2")
+openni.openni2 = types.ModuleType("openni.openni2")
+sys.modules.update({"cv2": types.ModuleType("cv2"), "numpy": types.ModuleType("numpy"),
+                    "openni": openni, "openni._openni2": openni._openni2,
+                    "openni.openni2": openni.openni2})
+import tvpet_pi.depth_worker
+"""
+
+
+DRIVER_NOISE = """
+import os
+from tvpet_pi.depth_wire import encode_frame
+out = tvpet_pi.depth_worker.frame_output()
+print("Warning: USB events thread", flush=True)
+os.write(1, b"ReadBinaryFile, 63\\n")
+out.write(encode_frame({"sequence": 1}, b"\\xff\\xd8x"))
+out.flush()
+"""
+
+
+def test_worker_imports_without_the_agents_dependencies() -> None:
+    # 0.12.0 shipped a worker that pulled pydantic in through tvpet_pi.depth and died on start.
+    run = subprocess.run([sys.executable, "-c", POSE_VENV_IMPORT], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    assert MAX_JPEG == protocol.MAX_JPEG
+
+
+def test_driver_output_stays_off_the_frame_stream() -> None:
+    # Orbbec's driver prints to stdout; 0.12.0 mixed those lines into the frames.
+    run = subprocess.run(
+        [sys.executable, "-c", POSE_VENV_IMPORT + DRIVER_NOISE], capture_output=True
+    )
+    assert run.returncode == 0, run.stderr
+    assert read_frame(io.BytesIO(run.stdout)) == ({"sequence": 1}, b"\xff\xd8x")
+    assert b"USB events" in run.stderr and b"ReadBinaryFile" in run.stderr
+
+
 FAKE_WORKER = """
 import sys, time
-from tvpet_pi.depth import encode_frame
+from tvpet_pi.depth_wire import encode_frame
 for n in (1, 2):
     sys.stdout.buffer.write(encode_frame({"sequence": n, "centre_mm": 800 + n}, b"\\xff\\xd8x"))
     sys.stdout.buffer.flush()
