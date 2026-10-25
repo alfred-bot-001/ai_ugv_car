@@ -3,6 +3,10 @@
 import math
 
 from ugv_nav_tools.loc_health import (
+    JUMP_ROTATION_RAD,
+    JUMP_TRANSLATION_M,
+    MAPPING_JUMP_ROTATION_RAD,
+    MAPPING_JUMP_TRANSLATION_M,
     MATCH_SECONDS,
     OCCUPIED,
     JumpWatch,
@@ -19,6 +23,17 @@ from ugv_nav_tools.stall import Pose2D
 
 def at(t: float, x: float = 0.0, y: float = 0.0, yaw: float = 0.0) -> Stamped:
     return Stamped(t, Pose2D(x, y, yaw))
+
+
+ROBOT = (4.0, 0.0)  # robot 4 m from the odom origin, as late in a mapping run
+
+
+def heading_fix(t: float, yaw: float, robot: tuple[float, float] = ROBOT) -> Stamped:
+    """map->odom that turns the robot in place by `yaw`: the odom origin swings r*yaw."""
+    rx, ry = robot
+    tx = rx - (rx * math.cos(yaw) - ry * math.sin(yaw))
+    ty = ry - (rx * math.sin(yaw) + ry * math.cos(yaw))
+    return Stamped(t, Pose2D(tx, ty, yaw), robot)
 
 
 def test_smooth_corrections_pass_and_a_jump_is_held_for_a_second() -> None:
@@ -87,7 +102,7 @@ def test_mapping_mode_judges_only_jumps() -> None:
     mapping.on_match(5.0, 0.0)
     assert mapping.reason is None
     mapping.on_transform(at(0.0))
-    mapping.on_transform(at(0.2, x=0.5))
+    mapping.on_transform(at(0.2, x=0.9))  # the 2026-10-14 sized jump
     assert mapping.reason is not None and "jumped" in mapping.reason
 
     located = LocalizationHealth(localization=True)
@@ -102,3 +117,43 @@ def test_halt_only_while_navigation_drives() -> None:
     assert not should_halt("map->odom jumped 0.30 m", {"nav_owned": False, "fault": None})
     assert not should_halt("jump", {"nav_owned": True, "fault": {"reason": "stall_body"}})
     assert not should_halt("jump", {})
+
+
+def test_jump_is_measured_at_the_robot_not_at_the_odom_origin() -> None:
+    # 2026-10-25: SLAM turned the heading 0.3 rad with the car 4 m out; the odom
+    # origin swung 1.2 m while the car itself did not move on the map.
+    watch = JumpWatch()
+    assert watch.add(heading_fix(0.0, 0.0)) is None
+    assert watch.add(heading_fix(0.2, 0.3)) is None
+    # A real 0.9 m shift of the car on the map is still a jump wherever the origin is.
+    assert watch.add(Stamped(0.4, Pose2D(0.9, 0.0, 0.0), ROBOT)) is not None
+
+
+def test_without_a_robot_position_the_origin_stands_in() -> None:
+    watch = JumpWatch()
+    assert watch.add(at(0.0)) is None
+    assert watch.add(at(0.2, x=0.3)) is not None
+
+
+def test_mapping_mode_has_its_own_jump_thresholds() -> None:
+    assert MAPPING_JUMP_TRANSLATION_M > JUMP_TRANSLATION_M
+    assert MAPPING_JUMP_ROTATION_RAD > JUMP_ROTATION_RAD
+    # A 0.42 rad SLAM heading fix (seen at every mapping start on 2026-10-25) is normal
+    # while mapping and a fault while localizing on a saved map.
+    mapping = LocalizationHealth(localization=False)
+    mapping.on_transform(heading_fix(0.0, 0.0))
+    mapping.on_transform(heading_fix(0.2, 0.42))
+    assert mapping.reason is None
+    located = LocalizationHealth(localization=True)
+    located.on_transform(heading_fix(0.0, 0.0))
+    located.on_transform(heading_fix(0.2, 0.42))
+    assert located.reason is not None and "jumped" in located.reason
+    # Translation: 0.4 m at the robot passes while mapping, fails while localizing.
+    mapping.on_transform(Stamped(2.0, Pose2D(0.0, 0.0, 0.0), ROBOT))
+    mapping.on_transform(Stamped(2.2, Pose2D(0.4, 0.0, 0.0), ROBOT))
+    assert mapping.reason is None
+    mapping.on_transform(Stamped(2.4, Pose2D(1.1, 0.0, 0.0), ROBOT))  # 0.7 m / 0.2 s
+    assert mapping.reason is not None
+    located.on_transform(Stamped(2.0, Pose2D(0.0, 0.0, 0.0), ROBOT))
+    located.on_transform(Stamped(2.2, Pose2D(0.4, 0.0, 0.0), ROBOT))
+    assert located.reason is not None
