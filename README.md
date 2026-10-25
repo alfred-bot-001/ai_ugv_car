@@ -6,7 +6,7 @@
 
 | 代码包 | 运行位置 | 内容 |
 | --- | --- | --- |
-| [`robot-console/`](robot-console/) | Mac Mini，launchd | FastAPI 主控台：登录/SSO、SQLite、设备 WSS、音视频、ASR/TTS、人脸、姿态审核与照片标注 |
+| [`robot-console/`](robot-console/) | Mac Mini，launchd | FastAPI 主控台：登录/SSO、SQLite、设备 WSS、音视频、ASR/TTS、人脸、姿态审核与照片标注、前方 ToF 8×8 实时热力图 |
 | [`pi-agent/`](pi-agent/) | 老三 Pi，systemd | WSS 设备代理：V4L2/M2/ALSA、独占 UART、遥测、姿态 worker、租约与本地停止保护 |
 | [`ugv-nav/`](ugv-nav/) | 老三 Pi，Docker | ROS2 Humble 容器：激光雷达、TF，后续建图与导航；不接触 UART |
 | [`scripts/`](scripts/) | 开发机 / Pi | 实机运动验收、浏览器人脸叠加验证、离线姿态相册 |

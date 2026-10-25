@@ -33,6 +33,47 @@ function poseReviewText(review){
 }
 // Sleep mode (Pi 0.11.0): after thirty quiet minutes the car cuts the LiDAR's USB power.
 function powerText(power){if(!power)return '未知';const minutes=Math.floor((power.idle_seconds||0)/60),asleep=power.state==='asleep',lidar=power.lidar;const note=lidar==='off'?'雷达已断电':lidar==='missing'?'雷达未找到':lidar==='unknown'?'雷达状态未知':asleep?'雷达仍供电':'';return (asleep?'休眠中':'清醒')+(note?' · '+note:'')+' · 空闲 '+minutes+' 分钟';}
+// Front ToF matrix (Pi 0.10.0 `status.tof`): 64 mm values row-major, row 0 looks ahead and row 7
+// at the floor just in front; 4000 is the sensor's "no return". The Pi reports status once a
+// second, so the 15 Hz sensor shows at 1 Hz here; TOF_RENDER_MS caps repaints if that feed speeds up.
+const TOF_INVALID=4000,TOF_NEAR_MM=100,TOF_FAR_MM=1500,TOF_RENDER_MS=200;
+const TOF_STATE_TEXT={offline:'设备离线',disabled:'未启用',starting:'启动中',active:'正常',fault:'故障'};
+const TOF_REASON_TEXT={tof_low_obstacle:'低矮障碍',tof_cliff:'悬崖'};
+function tofColor(mm){if(!Number.isFinite(mm)||mm<=0||mm>=TOF_INVALID)return '';const t=Math.min(1,Math.max(0,(mm-TOF_NEAR_MM)/(TOF_FAR_MM-TOF_NEAR_MM)));return 'hsl('+Math.round(t*240)+' 75% 48%)';}
+function tofCells(list){return Array.isArray(list)?list.filter(i=>Number.isInteger(i)&&i>=0&&i<64):[];}
+function tofSummary(tof,safetyStop,online=true){
+  const state=!online?'offline':typeof tof?.state==='string'?tof.state:'disabled';
+  const raw=Array.isArray(tof?.values)&&tof.values.length===64?tof.values:null;
+  const values=raw&&state==='active'?raw.map(v=>Number.isInteger(v)&&v>=0?v:TOF_INVALID):null;
+  let nearest=null,nearestIndex=-1;
+  if(values)values.forEach((v,i)=>{if(v>0&&v<TOF_INVALID&&(nearest===null||v<nearest)){nearest=v;nearestIndex=i;}});
+  const reason=typeof tof?.reason==='string'?tof.reason:'';
+  const verdict=state!=='active'?'':reason?TOF_REASON_TEXT[reason]||reason:tof.baseline?'正常':'无基准';
+  const stopReason=typeof safetyStop?.reason==='string'?safetyStop.reason:'';
+  const stop=stopReason?{text:TOF_REASON_TEXT[stopReason]||stopReason,at:Number(safetyStop.at)||0}:null;
+  return {state,label:TOF_STATE_TEXT[state]||state,error:state==='fault'?String(tof?.error||''):'',hz:Number(tof?.hz)||0,values,nearest,nearestIndex,verdict,obstacle:tofCells(tof?.obstacle_cells),cliff:tofCells(tof?.cliff_cells),stop};
+}
+function tofCellName(index){return '第'+(Math.floor(index/8)+1)+'行第'+(index%8+1)+'列';}
+function tofCellTitle(index,mm){return tofCellName(index)+' · '+(mm==null?'无数据':mm>=TOF_INVALID?'无回波':mm+' mm');}
+function tofText(summary,picked=-1){
+  const parts=['ToF '+summary.label+(summary.error?'：'+summary.error:'')];
+  if(summary.state==='active'){
+    parts.push(summary.hz.toFixed(1)+' Hz');
+    if(!summary.values)parts.push('无数据');
+    else{
+      parts.push(summary.nearest===null?'最近 无回波':'最近 '+summary.nearest+' mm（'+tofCellName(summary.nearestIndex)+'）');
+      parts.push('判定 '+summary.verdict);
+      if(summary.obstacle.length)parts.push('障碍格 '+summary.obstacle.length);
+      if(summary.cliff.length)parts.push('失地格 '+summary.cliff.length);
+      if(picked>=0)parts.push(tofCellTitle(picked,summary.values[picked]));
+    }
+  }
+  if(summary.stop)parts.push('上次停车 '+summary.stop.text+(summary.stop.at?' '+new Date(summary.stop.at*1000).toLocaleTimeString('zh-CN',{hour12:false}):''));
+  return parts.join(' · ');
+}
+let tofRenderedAt=0,tofPicked=-1;
+function buildTofGrid(){const grid=$('#tof-grid');if(!grid||grid.children.length)return;for(let i=0;i<64;i++){const cell=document.createElement('i');cell.dataset.index=String(i);grid.append(cell);}grid.onpointerdown=e=>{const index=Number(e.target.dataset?.index);tofPicked=Number.isInteger(index)&&index!==tofPicked?index:-1;renderTof(status,true);};}
+function renderTof(data,force=false){const grid=$('#tof-grid');if(!grid)return;const now=performance.now();if(!force&&now-tofRenderedAt<TOF_RENDER_MS)return;tofRenderedAt=now;const state=data.state||{},summary=tofSummary(state.tof,state.board?.safety_stop,!!data.online);const cells=grid.children;for(let i=0;i<cells.length;i++){const mm=summary.values?summary.values[i]:null;cells[i].style.background=tofColor(mm);cells[i].title=tofCellTitle(i,mm);cells[i].className=(summary.obstacle.includes(i)?'obstacle':summary.cliff.includes(i)?'cliff':'')+(tofPicked===i?' picked':'');}grid.classList.toggle('idle',!summary.values);$('#tof-detail').textContent=tofText(summary,tofPicked);}
 function render(data){status=data;const online=data.online,state=data.state||{},system=state.system||{},board=state.board||{},telemetry=board.telemetry||{};
   const onlineBadge=$('#online-badge');onlineBadge.textContent=online?'老三在线':'老三离线';onlineBadge.className='badge '+(online?'':'warning');
   $('#sidebar-status').textContent=online?'设备连接正常':'等待设备连接';
@@ -53,7 +94,7 @@ function render(data){status=data;const online=data.online,state=data.state||{},
   for(const target of ['wheels','gimbal']){const ready=online&&board[target+'_ready']&&!board.estopped,element=$('#stick-'+target);element.setAttribute('aria-disabled',String(!ready));const gate=$('#gate-'+target);if(gate){gate.textContent=board.estopped?'急停锁定':press[target]?'运动中':ready?'可以控制':!online?'设备离线':board.control_qualified?'等待硬件恢复':'硬件待检查';gate.className='badge '+(ready?'':'warning');}if(!ready&&press[target])stopStick(target);
     const feedback=$('#feedback-'+target);if(feedback)feedback.textContent=target==='wheels'?(telemetry.L!=null?'左轮 '+telemetry.L.toFixed(3)+' / 右轮 '+telemetry.R.toFixed(3)+' · '+(ready?'已验收':board.gate_reason):board.gate_reason||'设备离线，控制已锁定。'):(telemetry.pan!=null?'水平 '+telemetry.pan.toFixed(1)+'° / 俯仰 '+telemetry.tilt.toFixed(1)+'° · '+(ready?'拖动圆盘转动视角':board.gate_reason):ready?'拖动圆盘转动视角。':board.gate_reason||'设备离线，控制已锁定。');}
   for(const id of ['video-toggle','snapshot','listen','say','speech-stop'])if(!$('#'+id).dataset.busy)$('#'+id).disabled=!online;
-  renderLights(board,online);
+  renderLights(board,online);renderTof(data);
   $('#transcribe').disabled=!online||!data.asr_ready||$('#transcribe').dataset.busy==='1';$('#transcribe').title=data.asr_ready?'采集 5 秒后在 Mini 本地转写':'尚未安装 Mini 本地转写模型';
   if(!online){closeMedia();releaseStick();}else if(!videoSocket)faceState('idle');
 }
@@ -145,4 +186,5 @@ $('#logout').onclick=()=>action($('#logout'),async()=>{
     const home=document.createElement('a');home.href='https://home.aimaker.vip/';home.textContent='前往家庭控制台确认退出';banner.append(' ',home);}
 });
 $('#password-open').onclick=()=>$('#password-dialog').showModal();$('#password-close').onclick=()=>$('#password-dialog').close();$('#password-form').onsubmit=async e=>{e.preventDefault();if($('#new-password').value!==$('#confirm-password').value){$('#password-error').textContent='两次新密码不一致';return;}try{await api('auth/password',{old_password:$('#old-password').value,new_password:$('#new-password').value});e.target.reset();closeMedia();location.replace('/');}catch(error){$('#password-error').textContent=error.message;}};
+buildTofGrid();
 (async()=>{try{const response=await fetch('/api/v1/auth/session');if(authStopped)return;if(!response.ok){location.replace('/');return;}const data=await response.json();if(authStopped)return;csrf=data.csrf;connectControl();poll();}catch(error){toast('无法连接 Mini 服务');}})();
