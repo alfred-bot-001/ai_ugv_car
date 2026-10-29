@@ -818,6 +818,15 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **回滚**：主机 `.venv` 装回 0.8.1（`backups/20261025-pre-0.8.2/src.tgz` 里的 `src/dist/`），然后重启 `ugv-navd`。
 - **待办**：充好电后构建 `ai-ugv-car/ugv-nav:0.8.2`（`sudo docker compose build`）。
 
+## 2026-10-25 地图页「全坏」：局域网分流漏掉 HTTPS 记录，Chrome 做 ECH 握手失败（只改 Mini dnsmasq）
+
+- **现象（17:47）**：用户在 Chrome 里打开 `/navigation`，页面有侧栏和标题样式，但地图区没有高度、复选框巨大、两列变一列：`style.css` 加载了，`navigation.css` 没有。nginx 访问日志里 Chrome 请求了 4 次 `/navigation`，之后没有一次 `navigation.css`。仓库代码、线上 0.14.1 的文件、MIME、CSP 全部正常；本地跑同一份代码渲染正确。
+- **根因**：上面的「在家时浏览器直达 Mini」只用 `address=/car.aimaker.vip/192.168.1.123` 接管了 A/AAAA，HTTPS（type 65）查询仍转发给上游，返回 Cloudflare 的记录（带 ECH 配置，公开名 `cloudflare-ech.com`）。Chrome 看到 ECH 配置就用加密 ClientHello 连 Mini 的 nginx；nginx 不支持 ECH，回的是 `aimaker.vip` 的 Let's Encrypt 证书，与公开名不匹配，Chrome 报 `ERR_ECH_FALLBACK_CERTIFICATE_INVALID` 并断开。HTML 和第一个 CSS 走复用连接侥幸成功，`navigation.css` 要开新连接就失败；桌面应用内置浏览器直接打不开站点。curl、Safari 不做 ECH，所以之前的验证都没暴露。
+- **做法（17:55，用户批准后）**：`/opt/homebrew/etc/dnsmasq.d/car-lan.conf` 末尾加 `local=/car.aimaker.vip/`（带注释），该域名除 A/AAAA 外的查询在本地返回 NODATA，不再转发；`dnsmasq --test` 通过后 `sudo launchctl kickstart -k system/sh.brew.dnsmasq`。改前文件备份为 `/Users/agent001/workspace-agent/deploy/backups/20261025-lan-direct/car-lan.conf.before-local-20261025T1755`。
+- **验证**：`dig car.aimaker.vip` 仍得 `192.168.1.123`；`dig TYPE65 car.aimaker.vip` 为 NOERROR 无答案；`aimaker.vip` 等其他域名解析不变；curl `/static/navigation.css` 200。Chrome 重新打开 `/navigation`：两份样式表都加载（`navigation.css` 119 条规则），`.nav-grid` 两列等宽，图层复选框 16 px，地图区 588 × 441。内置浏览器也能连上站点（跳到 SSO 登录）。
+- **回滚**：把上面的备份复制回 `car-lan.conf`，再 `sudo launchctl kickstart -k system/sh.brew.dnsmasq`。
+- **教训**：接管一个域名的解析时要连 HTTPS/SVCB 记录一起接管（`local=` 或 dnsmasq 2.90+ 的 `filter-rr=HTTPS`），并用 Chrome 实测，不能只靠 curl。
+
 ## 2026-10-25 容器健康检查不再调用 ROS 命令行（ugv-nav 0.8.3）
 
 - **现象**：
