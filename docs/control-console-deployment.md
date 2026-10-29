@@ -826,3 +826,26 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 - **验证**：`dig car.aimaker.vip` 仍得 `192.168.1.123`；`dig TYPE65 car.aimaker.vip` 为 NOERROR 无答案；`aimaker.vip` 等其他域名解析不变；curl `/static/navigation.css` 200。Chrome 重新打开 `/navigation`：两份样式表都加载（`navigation.css` 119 条规则），`.nav-grid` 两列等宽，图层复选框 16 px，地图区 588 × 441。内置浏览器也能连上站点（跳到 SSO 登录）。
 - **回滚**：把上面的备份复制回 `car-lan.conf`，再 `sudo launchctl kickstart -k system/sh.brew.dnsmasq`。
 - **教训**：接管一个域名的解析时要连 HTTPS/SVCB 记录一起接管（`local=` 或 dnsmasq 2.90+ 的 `filter-rr=HTTPS`），并用 Chrome 实测，不能只靠 curl。
+
+## 2026-10-25 容器健康检查不再调用 ROS 命令行（ugv-nav 0.8.3）
+
+- **现象**：
+  - 21:27 的探索两段都「到达」了，车却没动。原因是控制器里的 map→odom 停在 19:03:58，已经过期 2.4 小时；而同一时刻 SLAM 在正常发布新的变换（另一个探测进程读到的是新鲜的）。
+  - 下午 14:36 和 14:47 也出现过同类情况，当时卡住的是 SLAM 自己的 /tf 订阅：扫描和里程计都新鲜，SLAM 却 4 分钟没处理一帧。
+- **推断**：
+  - 容器健康检查每约 34 秒执行一次 `timeout 8 ros2 topic hz /scan | grep -q 'average rate'`，grep 匹配到第一行就退出，ros2 进程随之被强杀。
+  - Fast DDS 的参与者被强杀后，可能遗留共享内存端口，导致其他进程的订阅卡住。这是已知问题，但这里还没有直接证据。
+  - **更正**：提交说明里把容器 `/dev/shm` 中的 85 个 `fastrtps_*` 文件当成「残骸」，这是错的。新建的容器同样是 85 个，这只是正常运行时的数量。
+- **做法**：
+  - 桥接节点在 `/tmp/board_health.json` 里额外写入 `scan_age`（距最近一帧扫描的秒数）。
+  - 健康检查改为只读这个文件：遥测新鲜，并且 `scan_age < 2`；不再启动任何 ROS 进程。
+- **门禁**：ruff、格式检查、mypy 全过；pytest 480 项通过，覆盖率 83.33%；CI 只有 `test_sso` 两项偶发失败。
+- **部署（21:32，main `b1e0dc2`，PR #73，校验输出 ok）**：
+  - **先保存地图**：当时的建图存为 `autosave-20261025-2132`。
+  - **备份**：`backups/20261025-pre-0.8.3/`。
+  - **安装**：rsync 源码，wheel SHA-256 前缀为 `63ed4d4a`；`build-0.8.3.log` 生成镜像 `ai-ugv-car/ugv-nav:0.8.3`；主机 `.venv` 装 0.8.3，重启 `ugv-navd`；再经 navd 的 `mapping` 任务用新镜像重建容器。
+- **验证**：
+  - 容器为 healthy（新的检查方式），`board_health.json` 中 `scan_age` 0.08 s，map→odom 新鲜。
+  - 随后的探索中车确实动了，从 (−0.13, −0.24) 开到 (0.27, 0.02)，没有再出现「变换过期」。不过之后因原地转向打滑触发卡住停车，见 TODO「亮面木地板上原地转不动」。
+  - 推断是否成立，要看长时间运行后控制器和 SLAM 的变换还会不会过期。
+- **回滚**：`UGV_NAV_VERSION=0.8.2` 重建容器（镜像仍在）；主机 `.venv` 装回 0.8.2（`backups/20261025-pre-0.8.3/src.tgz` 里的 `src/dist/`），然后重启 `ugv-navd`。
