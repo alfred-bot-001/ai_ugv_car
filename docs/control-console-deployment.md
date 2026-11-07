@@ -1,5 +1,7 @@
 # 老三主控台部署与验证
 
+> 占位符约定：`<MINI_LAN_IP>` 为 Mini 的局域网地址，`<ROUTER_IP>` 为路由器地址，`<ISP_DNS_1>`/`<ISP_DNS_2>` 为运营商 DNS，`<DEPLOY_ROOT>` 为 Mini 上的部署根目录，`<NGINX_CONF_DIR>`/`<DNSMASQ_CONF_DIR>` 为 Homebrew 下 nginx / dnsmasq 的配置目录。实际值只记在私有运维记录里，不写入本公开仓库。
+
 ## 2026-10-04 照片标注发布（Mini 0.5.0）
 
 已将 `ai_tv_pet_console-0.5.0-py3-none-any.whl` 安装到 Mini 的 deploy `.venv`，服务从持久运行目录启动。保留 0.4.2 回滚包，升级备份位于 `backups/photos-20261004-085631/`，管理员密码哈希与会话 generation 未改变，Pi 代理维持 0.3.0。
@@ -19,7 +21,7 @@ Mini 控制台版本 0.6.1，Pi 代理版本 0.3.1；更新 2026-10-04。照片�
 
 | 模块 | 部署目录 | 服务 | 职责 |
 | --- | --- | --- | --- |
-| Mini 核心 | `/Users/agent001/workspace-agent/deploy/ai-tv-pet-console/` | `com.ai-tv-pet.console` | 页面、固定 admin、SQLite、设备注册、WSS、ASR/TTS、家庭人脸识别 |
+| Mini 核心 | `<DEPLOY_ROOT>/ai-tv-pet-console/` | `com.ai-tv-pet.console` | 页面、固定 admin、SQLite、设备注册、WSS、ASR/TTS、家庭人脸识别 |
 | Pi 代理 | `/home/ws/deploy/ai-tv-pet-agent/` | `ai-tv-pet-agent.service` | 设备/动作/遥测、V4L2、M2、扬声器及本地停止 |
 | 电视服务 | 既有独立部署 | 既有服务 | 展示；新主控台的联动适配器尚未接入 |
 
@@ -29,9 +31,9 @@ Mini LaunchAgent 和 Pi systemd 已启用并运行，TLS `/health` 返回 200、
 
 主控台正式入口：`https://car.aimaker.vip/`。浏览器通过 Cloudflare 的受信任 HTTPS 证书访问；`CONSOLE_ORIGIN` 必须设为 `https://car.aimaker.vip`。
 
-公共链路为 Cloudflare → 既有 TCP 443 relay → Nginx 8443 → `https://127.0.0.1:8788`。Nginx 保留 WebSocket 升级并关闭媒体缓冲，使用 Mini 私有 CA 校验后端证书。公共 `/internal/` 返回 404，Pi 的控制/媒体设备端仍通过 `wss://192.168.1.123:8788` 直连 LAN，验证 CA 与主机名。浏览器统一使用域名，不再用 IP 地址登录；IP 改变时更新私有证书 SAN 和 Pi 配置。
+公共链路为 Cloudflare → 既有 TCP 443 relay → Nginx 8443 → `https://127.0.0.1:8788`。Nginx 保留 WebSocket 升级并关闭媒体缓冲，使用 Mini 私有 CA 校验后端证书。公共 `/internal/` 返回 404，Pi 的控制/媒体设备端仍通过 `wss://<MINI_LAN_IP>:8788` 直连 LAN，验证 CA 与主机名。浏览器统一使用域名，不再用 IP 地址登录；IP 改变时更新私有证书 SAN 和 Pi 配置。
 
-已移除 Mini `/etc/hosts` 中旧的 `car.aimaker.vip` → `192.168.1.123` 映射并刷新 DNS，使 Mini 也经过 Cloudflare。共享 Nginx `unified-gateway.conf` 的其他主机以及原 `/tv/` → 9444 路由保留。配置模板见 [Nginx car 入口](../robot-console/deploy/nginx-car.aimaker.vip.conf)。路由改动前的 Nginx、hosts 和 LaunchAgent 备份在 deploy `backups/20261001-155426-domain/`。没有修改管理员密码、Pi 设备凭据或其他域名证书。
+已移除 Mini `/etc/hosts` 中旧的 `car.aimaker.vip` → `<MINI_LAN_IP>` 映射并刷新 DNS，使 Mini 也经过 Cloudflare。共享 Nginx `unified-gateway.conf` 的其他主机以及原 `/tv/` → 9444 路由保留。配置模板见 [Nginx car 入口](../robot-console/deploy/nginx-car.aimaker.vip.conf)。路由改动前的 Nginx、hosts 和 LaunchAgent 备份在 deploy `backups/20261001-155426-domain/`。没有修改管理员密码、Pi 设备凭据或其他域名证书。
 
 首次重装服务遇到 launchd 的异步卸载竞态，立即 bootstrap 返回错误 5；安装器已增加最多 6 秒的有界重试并增加回归测试。当前 LaunchAgent 与 Pi 已运行。
 
@@ -62,7 +64,7 @@ uv build --all-packages --wheel --out-dir dist
 Mini 更新示例（服务停止后）：
 
 ```sh
-uv pip install --python /Users/agent001/workspace-agent/deploy/ai-tv-pet-console/.venv/bin/python \
+uv pip install --python <DEPLOY_ROOT>/ai-tv-pet-console/.venv/bin/python \
   --no-deps --reinstall dist/ai_tv_pet_console-0.3.1-py3-none-any.whl \
   dist/ai_tv_pet_pi_agent-0.2.2-py3-none-any.whl
 ```
@@ -74,21 +76,21 @@ uv pip install --python /Users/agent001/workspace-agent/deploy/ai-tv-pet-console
 管理员密码使用上面的本地初始化入口。设备凭据由 CLI 在私有文件生成，不输出令牌：
 
 ```sh
-CONSOLE_DATA_DIR=/Users/agent001/workspace-agent/deploy/ai-tv-pet-console/state \
-  /Users/agent001/workspace-agent/deploy/ai-tv-pet-console/.venv/bin/robot-console \
+CONSOLE_DATA_DIR=<DEPLOY_ROOT>/ai-tv-pet-console/state \
+  <DEPLOY_ROOT>/ai-tv-pet-console/.venv/bin/robot-console \
   agent register --id laosan \
-  --token-file /Users/agent001/workspace-agent/deploy/ai-tv-pet-console/private/agent.token
+  --token-file <DEPLOY_ROOT>/ai-tv-pet-console/private/agent.token
 ```
 
 已注册设备不重复执行此命令。CA 公钥和该设备 token 安全复制至 Pi 私有目录；CA 签名私钥和服务器私钥只留 Mini。
 
 ```sh
 uv run python robot-console/deploy/install_launchd.py \
-  --runtime /Users/agent001/workspace-agent/deploy/ai-tv-pet-console \
+  --runtime <DEPLOY_ROOT>/ai-tv-pet-console \
   --origin https://car.aimaker.vip \
-  --cert /Users/agent001/workspace-agent/deploy/ai-tv-pet-console/private/mini-cert.pem \
-  --key /Users/agent001/workspace-agent/deploy/ai-tv-pet-console/private/mini-server.key \
-  --asr-model /Users/agent001/workspace-agent/deploy/ai-tv-pet-console/models/whisper-small \
+  --cert <DEPLOY_ROOT>/ai-tv-pet-console/private/mini-cert.pem \
+  --key <DEPLOY_ROOT>/ai-tv-pet-console/private/mini-server.key \
+  --asr-model <DEPLOY_ROOT>/ai-tv-pet-console/models/whisper-small \
   --face-service-url http://127.0.0.1:8000
 ```
 
@@ -228,7 +230,7 @@ Pi 0.2.2 与 Mini 0.3.1 已从 wheel 部署，服务重启后 Pi 重连。部署
 
 Mini console **0.4.0**，Pi agent **0.3.0**。运行位置沿用现有 deploy；发布 wheel 分别保存在 releases/0.4.0 和 releases/0.3.0。Pi 原生依赖使用独立 pose-venv，MediaPipe 0.10.18 ARM64 wheel；锁定清单为 pi-agent/deploy/pose-requirements.txt，模型固定 Pose Landmarker Lite v1，校验和见 Pi README。
 
-Mini 设置 CONSOLE_POSE_REVIEW_DIR 为 `/Users/agent001/workspace-agent/deploy/ai-tv-pet-console/tmp/pose-review`，CONSOLE_POSE_REVIEW_FONT 为 `/System/Library/Fonts/STHeiti Medium.ttc`。每 30 秒保存标注 JPG 与同名 JSON，重启从最近文件时间延续间隔。目录 0700、文件 0600，HTTP 对应路径返回 404。文件不发布、不上传、不写入 Git。
+Mini 设置 CONSOLE_POSE_REVIEW_DIR 为 `<DEPLOY_ROOT>/ai-tv-pet-console/tmp/pose-review`，CONSOLE_POSE_REVIEW_FONT 为 `/System/Library/Fonts/STHeiti Medium.ttc`。每 30 秒保存标注 JPG 与同名 JSON，重启从最近文件时间延续间隔。目录 0700、文件 0600，HTTP 对应路径返回 404。文件不发布、不上传、不写入 Git。
 
 验证结果：
 
@@ -721,17 +723,17 @@ Mini 已安装 console 0.6.0 和协议包 0.3.1，继续使用 `deploy/ai-tv-pet
 
 ## 2026-10-25 在家时浏览器直达 Mini（局域网分流 + 受信任证书）
 
-用户反馈控制和摄像头延迟大。实测公网一次 HTTP 往返约 160 ms，多出来的时间在 Cloudflare 回源到家里这一段；局域网直连 Mini 约 15 ms。目标：在家时 `https://car.aimaker.vip/` 在局域网内直达 Mini、浏览器无证书警告；外出时仍走 Cloudflare 原路。`CONSOLE_ORIGIN`、登录 Cookie、Cloudflare DNS 记录（car 的 A 记录仍为代理状态）、443 → 8443 的 TCP 代理都没有动；Pi 代理本来就用 `wss://192.168.1.123:8788` 直连，不受影响。
+用户反馈控制和摄像头延迟大。实测公网一次 HTTP 往返约 160 ms，多出来的时间在 Cloudflare 回源到家里这一段；局域网直连 Mini 约 15 ms。目标：在家时 `https://car.aimaker.vip/` 在局域网内直达 Mini、浏览器无证书警告；外出时仍走 Cloudflare 原路。`CONSOLE_ORIGIN`、登录 Cookie、Cloudflare DNS 记录（car 的 A 记录仍为代理状态）、443 → 8443 的 TCP 代理都没有动；Pi 代理本来就用 `wss://<MINI_LAN_IP>:8788` 直连，不受影响。
 
-- **障碍**：Nginx 8443 上 car 的 server 块（在 `/opt/homebrew/etc/nginx/servers/unified-gateway.conf` 里，不是单独文件）挂的是自签 `wildcard-origin` 证书，浏览器不信任，所以不能只改 DNS。路由器是 TP-Link TL-7DR5150 易展版（192.168.1.1），家用固件没有自定义 DNS 记录，只能改 DHCP 下发的 DNS 服务器地址。
-- **证书**：Let's Encrypt 通配证书 `*.aimaker.vip` + `aimaker.vip`（ECDSA，签发 2026-10-25，到期 2027-01-23），用 certbot 5.8.0 + `certbot-dns-cloudflare` 经 Cloudflare DNS-01 验证签发。certbot 装在 Mini 的 uv 虚拟环境 `/Users/agent001/workspace-agent/deploy/letsencrypt/.venv`，证书目录 `…/letsencrypt/config/live/aimaker.vip/`（`fullchain.pem`、`privkey.pem`），续期参数在 `…/letsencrypt/config/renewal/aimaker.vip.conf`。Cloudflare API Token 由用户自己创建（限 aimaker.vip，Zone / DNS / Edit + Zone / Zone / Read）并放在 `…/letsencrypt/cloudflare.ini`（0600），不进仓库；第一次给的 Token 只有 DNS Read，建 TXT 记录返回 403，改成 Edit 后 dry-run 和正式签发一次通过。Let's Encrypt 账号未登记邮箱。
+- **障碍**：Nginx 8443 上 car 的 server 块（在 `<NGINX_CONF_DIR>/servers/unified-gateway.conf` 里，不是单独文件）挂的是自签 `wildcard-origin` 证书，浏览器不信任，所以不能只改 DNS。路由器为家用型号（<ROUTER_IP>），固件没有自定义 DNS 记录，只能改 DHCP 下发的 DNS 服务器地址。
+- **证书**：Let's Encrypt 通配证书 `*.aimaker.vip` + `aimaker.vip`（ECDSA，签发 2026-10-25，到期 2027-01-23），用 certbot 5.8.0 + `certbot-dns-cloudflare` 经 Cloudflare DNS-01 验证签发。certbot 装在 Mini 的 uv 虚拟环境 `<DEPLOY_ROOT>/letsencrypt/.venv`，证书目录 `…/letsencrypt/config/live/aimaker.vip/`（`fullchain.pem`、`privkey.pem`），续期参数在 `…/letsencrypt/config/renewal/aimaker.vip.conf`。Cloudflare API Token 由用户自己创建（限 aimaker.vip，Zone / DNS / Edit + Zone / Zone / Read）并放在 `…/letsencrypt/cloudflare.ini`（0600），不进仓库；第一次给的 Token 只有 DNS Read，建 TXT 记录返回 403，改成 Edit 后 dry-run 和正式签发一次通过。Let's Encrypt 账号未登记邮箱。
 - **Nginx**：只改 car 的 server 块两行 `ssl_certificate` / `ssl_certificate_key` 指向上面的 Let's Encrypt 文件，并加注释；`nginx -t` 后 `nginx -s reload`（nginx master 以 agent001 运行，不需要 root）。tvpet / task / home / gate / zkKYC / api 等其他站点仍用原来的自签证书，用 SNI 逐个核对过。仓库模板 [nginx-car.aimaker.vip.conf](../robot-console/deploy/nginx-car.aimaker.vip.conf) 已同步，与线上 server 块逐行一致。
-- **自动续期**：脚本 `…/letsencrypt/renew.sh` 跑 `certbot renew`，续期成功后 `--deploy-hook` 执行 `nginx -s reload`；LaunchAgent `/Users/agent001/Library/LaunchAgents/com.ai-tv-pet.certbot-renew.plist` 每天 03:17 和 15:17 各跑一次（certbot 只在到期前 30 天内真正续期），日志在 `…/letsencrypt/logs/renew.*.log`。手工续期：`…/letsencrypt/renew.sh`；手工检查：`…/letsencrypt/.venv/bin/certbot certificates --config-dir …/letsencrypt/config`。
-- **内网 DNS**：Mini 上 `brew install dnsmasq`，配置 `/opt/homebrew/etc/dnsmasq.d/car-lan.conf`（主配置末尾加了 `conf-dir` 一行）：只绑定有线地址 `192.168.1.123`，`address=/car.aimaker.vip/192.168.1.123`，其余查询转给运营商 DNS `101.100.188.23` / `103.7.200.10`，`no-resolv`、`no-hosts`。以 root 的 launchd 守护进程 `sh.brew.dnsmasq`（`sudo brew services start dnsmasq`）运行，开机自启。Mini 自己的 DNS 设置没改，仍直接用运营商 DNS（Mini 访问 car 仍经 Cloudflare，与 2026-10-01 的决定一致）。路由器侧由用户在「DHCP 服务器」里把首选 DNS 改成 `192.168.1.123`、备用保留运营商 / 路由器地址；Mini 宕机时设备退到备用 DNS，网站仍可经 Cloudflare 打开，只是慢。
+- **自动续期**：脚本 `…/letsencrypt/renew.sh` 跑 `certbot renew`，续期成功后 `--deploy-hook` 执行 `nginx -s reload`；LaunchAgent `~/Library/LaunchAgents/com.ai-tv-pet.certbot-renew.plist` 每天 03:17 和 15:17 各跑一次（certbot 只在到期前 30 天内真正续期），日志在 `…/letsencrypt/logs/renew.*.log`。手工续期：`…/letsencrypt/renew.sh`；手工检查：`…/letsencrypt/.venv/bin/certbot certificates --config-dir …/letsencrypt/config`。
+- **内网 DNS**：Mini 上 `brew install dnsmasq`，配置 `<DNSMASQ_CONF_DIR>/car-lan.conf`（主配置末尾加了 `conf-dir` 一行）：只绑定有线地址 `<MINI_LAN_IP>`，`address=/car.aimaker.vip/<MINI_LAN_IP>`，其余查询转给运营商 DNS `<ISP_DNS_1>` / `<ISP_DNS_2>`，`no-resolv`、`no-hosts`。以 root 的 launchd 守护进程 `sh.brew.dnsmasq`（`sudo brew services start dnsmasq`）运行，开机自启。Mini 自己的 DNS 设置没改，仍直接用运营商 DNS（Mini 访问 car 仍经 Cloudflare，与 2026-10-01 的决定一致）。路由器侧由用户在 DHCP 服务器设置里把首选 DNS 改成 `<MINI_LAN_IP>`、备用保留运营商 / 路由器地址；Mini 宕机时设备退到备用 DNS，网站仍可经 Cloudflare 打开，只是慢。
 - **Cloudflare**：用户确认加密模式为 Full；受信任证书下 Full 和 Full (strict) 都能用，本次未改。要升到 strict 由用户在面板操作，不影响本方案。
-- **验证（证书与 Nginx 部分，2026-10-25 12:50）**：Mini 本机和局域网内另一台 Mac 用 `curl --resolve car.aimaker.vip:443:192.168.1.123`（系统 CA，不加 `-k`）访问 `/health`：200，`ssl_verify_result=0`，15～17 ms；`s_client` 看到 car 的 SNI 返回 Let's Encrypt 证书，tvpet 的 SNI 仍是自签；公网经 Cloudflare `/health` 200。未登录的 `/ws/video`、`/ws/control` 局域网返回 403（TLS 正常）；`/` 返回 303 到 SSO 登录。dnsmasq：`dig @192.168.1.123 car.aimaker.vip` 得 `192.168.1.123`，其他域名正常转发，本机查询约 10 ms。
-- **备份与回滚**：改动前的 `unified-gateway.conf`、`nginx.conf`、`/etc/hosts`、旧证书、`scutil --dns` 快照和 dnsmasq 默认配置在 `/Users/agent001/workspace-agent/deploy/backups/20261025-lan-direct/`。回滚证书：把备份的 `unified-gateway.conf` 复制回 `/opt/homebrew/etc/nginx/servers/` 后 `nginx -t && nginx -s reload`；回滚分流：路由器 DHCP 的 DNS 改回原值并让设备重连，Mini 上 `sudo brew services stop dnsmasq`（要彻底去掉就 `brew uninstall dnsmasq`，并删除主配置末尾的 `conf-dir` 行）；停续期：`launchctl bootout gui/$(id -u)/com.ai-tv-pet.certbot-renew`。
-- **路由器与浏览器实测（2026-10-25 13:20）**：路由器「路由设置 → DHCP服务器」里首选 DNS 填 `192.168.1.123`、备用 `192.168.1.1`（「上网设置 → 高级设置」里的 WAN 口 DNS 不能填局域网地址，固件会拒绝，不要用那一页）。局域网内的 Mac 重新拿到的 DHCP 信息里 DNS 已是这两个地址，`car.aimaker.vip` 解析到 `192.168.1.123`，tvpet / 百度 / GitHub 等其他域名解析不变。不带 `--resolve` 的 `curl https://car.aimaker.vip/health`：5 次全部 200、`remote_ip=192.168.1.123`、系统 CA 校验通过、16～33 ms（改前经 Cloudflare 150～165 ms）。桌面应用内置浏览器打开 `https://car.aimaker.vip/` 无证书拦截页，按 SSO 流程跳到 `home.aimaker.vip` 登录页（登录页仍经 Cloudflare，只在登录那一下）；打开 `/health` 显示 `agent_online: true, mode: control`。未登录的 `/ws/video`、`/ws/control` 经局域网返回 403。登录后的视频与控制延迟、手机 4G 下的公网访问由用户实看。
+- **验证（证书与 Nginx 部分，2026-10-25 12:50）**：Mini 本机和局域网内另一台 Mac 用 `curl --resolve car.aimaker.vip:443:<MINI_LAN_IP>`（系统 CA，不加 `-k`）访问 `/health`：200，`ssl_verify_result=0`，15～17 ms；`s_client` 看到 car 的 SNI 返回 Let's Encrypt 证书，tvpet 的 SNI 仍是自签；公网经 Cloudflare `/health` 200。未登录的 `/ws/video`、`/ws/control` 局域网返回 403（TLS 正常）；`/` 返回 303 到 SSO 登录。dnsmasq：`dig @<MINI_LAN_IP> car.aimaker.vip` 得 `<MINI_LAN_IP>`，其他域名正常转发，本机查询约 10 ms。
+- **备份与回滚**：改动前的 `unified-gateway.conf`、`nginx.conf`、`/etc/hosts`、旧证书、`scutil --dns` 快照和 dnsmasq 默认配置在 `<DEPLOY_ROOT>/backups/20261025-lan-direct/`。回滚证书：把备份的 `unified-gateway.conf` 复制回 `<NGINX_CONF_DIR>/servers/` 后 `nginx -t && nginx -s reload`；回滚分流：路由器 DHCP 的 DNS 改回原值并让设备重连，Mini 上 `sudo brew services stop dnsmasq`（要彻底去掉就 `brew uninstall dnsmasq`，并删除主配置末尾的 `conf-dir` 行）；停续期：`launchctl bootout gui/$(id -u)/com.ai-tv-pet.certbot-renew`。
+- **路由器与浏览器实测（2026-10-25 13:20）**：路由器 DHCP 服务器设置里首选 DNS 填 `<MINI_LAN_IP>`、备用 `<ROUTER_IP>`（WAN 口的 DNS 不能填局域网地址，固件会拒绝）。局域网内的 Mac 重新拿到的 DHCP 信息里 DNS 已是这两个地址，`car.aimaker.vip` 解析到 `<MINI_LAN_IP>`，tvpet / 百度 / GitHub 等其他域名解析不变。不带 `--resolve` 的 `curl https://car.aimaker.vip/health`：5 次全部 200、`remote_ip=<MINI_LAN_IP>`、系统 CA 校验通过、16～33 ms（改前经 Cloudflare 150～165 ms）。桌面应用内置浏览器打开 `https://car.aimaker.vip/` 无证书拦截页，按 SSO 流程跳到 `home.aimaker.vip` 登录页（登录页仍经 Cloudflare，只在登录那一下）；打开 `/health` 显示 `agent_online: true, mode: control`。未登录的 `/ws/video`、`/ws/control` 经局域网返回 403。登录后的视频与控制延迟、手机 4G 下的公网访问由用户实看。
 
 ## 2026-10-25 自动探索参照 FUEL / TARE（ugv-nav 0.8.0）；补记 Pi 代理 0.13.0
 
